@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 pub const SPEED_LEVELS: &[f32] = &[
     0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 11.0, 14.0, 17.0,
     20.0, 23.0, 27.0, 31.0, 41.0, 53.0, 67.0, 83.0, 91.0, 120.0, 150.0, 190.0,
@@ -9,12 +7,13 @@ pub const SPEED_LEVELS: &[f32] = &[
 pub const DEFAULT_SPEED: f32 = 67.0;
 pub const MIN_NATIVE_TEXT_CHARS: usize = 48;
 pub const BASE_PX_PER_POINT: f32 = 96.0 / 72.0;
-pub const PAGE_GAP: f32 = 22.0;
+pub const PAGE_GAP: f32 = 4.0;
 pub const PAGE_MARGIN: f32 = 26.0;
-pub const GRID_GAP: f32 = 14.0;
+pub const GRID_GAP: f32 = 2.0;
+pub const GRID_MARGIN: f32 = 2.0;
 pub const MAX_MANUAL_ZOOM: f32 = 20.0;
 pub const MAX_RENDER_WIDTH: u32 = 8192;
-pub const MIN_RENDER_WIDTH: u32 = 256;
+pub const MIN_RENDER_WIDTH: u32 = 96;
 pub const BITMAP_CACHE_BUDGET: usize = 320 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -27,22 +26,11 @@ pub enum ViewMode {
     Grid6,
     Grid10,
     Grid21,
+    Grid40,
+    Grid160,
 }
 
 impl ViewMode {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Manual => "Zoom",
-            Self::FitWidth => "Fit width",
-            Self::FitHeight => "Fit height",
-            Self::Spread => "2 pages (2×1)",
-            Self::Grid3 => "3 pages (3×1)",
-            Self::Grid6 => "6 pages (3×2)",
-            Self::Grid10 => "10 pages (5×2)",
-            Self::Grid21 => "21 pages (7×3)",
-        }
-    }
-
     pub fn grid_spec(self) -> Option<(usize, usize)> {
         match self {
             Self::Spread => Some((2, 1)),
@@ -50,6 +38,8 @@ impl ViewMode {
             Self::Grid6 => Some((3, 2)),
             Self::Grid10 => Some((5, 2)),
             Self::Grid21 => Some((7, 3)),
+            Self::Grid40 => Some((10, 4)),
+            Self::Grid160 => Some((20, 8)),
             _ => None,
         }
     }
@@ -89,13 +79,11 @@ pub struct PageTextData {
     pub page: usize,
     pub text: String,
     pub glyphs: Vec<Glyph>,
-    pub is_ocr: bool,
 }
 
 #[derive(Clone, Debug)]
 pub struct SearchHit {
     pub page: usize,
-    pub byte_start: usize,
     pub snippet: String,
 }
 
@@ -114,7 +102,6 @@ pub enum LinkTarget {
 
 #[derive(Clone, Debug)]
 pub struct DocumentInfo {
-    pub path: PathBuf,
     pub title: String,
     pub pages: Vec<PageMetric>,
 }
@@ -141,10 +128,6 @@ pub struct DocumentLayout {
     pub rows: Vec<LayoutRow>,
     pub content_width: f32,
     pub content_height: f32,
-    pub viewport_width: f32,
-    pub viewport_height: f32,
-    pub mode: Option<ViewMode>,
-    pub manual_zoom: f32,
 }
 
 impl DocumentLayout {

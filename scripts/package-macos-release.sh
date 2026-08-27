@@ -17,6 +17,10 @@ command -v curl >/dev/null
 command -v otool >/dev/null
 command -v install_name_tool >/dev/null
 
+if command -v brew >/dev/null 2>&1; then
+  export PKG_CONFIG_PATH="$(brew --prefix tesseract)/lib/pkgconfig:$(brew --prefix leptonica)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+fi
+
 BUILD_DIR="$ROOT/target/release-package"
 PDFIUM_DIR="$BUILD_DIR/pdfium"
 APP="$BUILD_DIR/kvikk pdf.app"
@@ -53,6 +57,9 @@ for lang in eng nor; do
     exit 1
   fi
 done
+
+# AppKit's standard About panel automatically uses Credits.html from Resources.
+cp assets/Credits.html "$RESOURCES/Credits.html"
 
 # Bundle non-system dylibs used by kvikk (Tesseract/Leptonica and their Homebrew deps),
 # then rewrite references to @executable_path/../Frameworks. PDFium is loaded at
@@ -107,17 +114,56 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleIconFile</key><string>Kvikk</string>
+  <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Lars Halvor. MIT License.</string>
+  <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>CFBundleDocumentTypes</key><array><dict>
-    <key>CFBundleTypeExtensions</key><array><string>pdf</string></array>
     <key>CFBundleTypeName</key><string>PDF document</string>
     <key>CFBundleTypeRole</key><string>Viewer</string>
+    <key>LSHandlerRank</key><string>Alternate</string>
+    <key>LSItemContentTypes</key><array><string>com.adobe.pdf</string></array>
+    <key>CFBundleTypeExtensions</key><array><string>pdf</string></array>
   </dict></array>
 </dict></plist>
 PLIST
 
 codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
-OUT="$ROOT/target/kvikk-pdf-${VERSION}-macos-${ARCH}.zip"
-rm -f "$OUT"
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT"
-echo "$OUT"
+
+ZIP_OUT="$ROOT/target/kvikk-pdf-${VERSION}-macos-${ARCH}.zip"
+DMG_OUT="$ROOT/target/kvikk-pdf-${VERSION}-macos-${ARCH}.dmg"
+rm -f "$ZIP_OUT" "$DMG_OUT"
+ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP_OUT"
+
+# Create the familiar macOS installer window: app on the left, Applications
+# shortcut on the right. create-dmg gives us the polished layout; hdiutil is a
+# dependency-free fallback that still includes the /Applications alias.
+DMG_STAGE="$BUILD_DIR/dmg-stage"
+rm -rf "$DMG_STAGE"
+mkdir -p "$DMG_STAGE"
+ditto "$APP" "$DMG_STAGE/kvikk pdf.app"
+
+if command -v create-dmg >/dev/null 2>&1; then
+  set +e
+  create-dmg \
+    --volname "kvikk pdf" \
+    --volicon "$RESOURCES/Kvikk.icns" \
+    --window-pos 200 120 \
+    --window-size 660 400 \
+    --icon-size 128 \
+    --icon "kvikk pdf.app" 175 190 \
+    --hide-extension "kvikk pdf.app" \
+    --app-drop-link 485 190 \
+    "$DMG_OUT" "$DMG_STAGE"
+  DMG_STATUS=$?
+  set -e
+else
+  DMG_STATUS=1
+fi
+
+if [[ $DMG_STATUS -ne 0 || ! -f "$DMG_OUT" ]]; then
+  rm -f "$DMG_OUT"
+  ln -sfn /Applications "$DMG_STAGE/Applications"
+  hdiutil create -volname "kvikk pdf" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_OUT" >/dev/null
+fi
+
+printf '%s\n%s\n' "$DMG_OUT" "$ZIP_OUT"

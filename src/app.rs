@@ -37,6 +37,8 @@ const COMMANDS: &[(&str, &str)] = &[
     ("5", "6 pages (3×2)"),
     ("6", "10 pages (5×2)"),
     ("7", "21 pages (7×3)"),
+    ("8", "40 pages (10×4)"),
+    ("9", "160 pages (20×8)"),
     ("F", "Toggle fullscreen"),
     ("Ctrl/⌘ C", "Copy selected PDF text"),
 ];
@@ -120,6 +122,10 @@ pub struct KvikkApp {
     show_about: bool,
     logo_texture: Option<TextureHandle>,
 
+    link_probe_id: u64,
+    link_probe_signature: Option<(usize, i32, i32)>,
+    hover_link_target: Option<LinkTarget>,
+
     status: String,
     last_viewport: Vec2,
     startup_path: Option<PathBuf>,
@@ -137,6 +143,7 @@ impl KvikkApp {
             .position(|speed| (*speed - DEFAULT_SPEED).abs() < f32::EPSILON)
             .unwrap_or(0);
 
+        crate::platform::register_context(&cc.egui_ctx);
         let backend = PdfBackend::new(cc.egui_ctx.clone());
         let render_generation = backend.render_generation();
         let logo_texture = image::load_from_memory(include_bytes!("../assets/logo.png"))
@@ -198,6 +205,9 @@ impl KvikkApp {
             question_visible_until: 0.0,
             show_about: false,
             logo_texture,
+            link_probe_id: 0,
+            link_probe_signature: None,
+            hover_link_target: None,
             status: "Drop a PDF here or open one from the menu.".into(),
             last_viewport: Vec2::ZERO,
             startup_path,
@@ -244,6 +254,8 @@ impl KvikkApp {
         self.search_index_cursor = 0;
         self.selection_anchor = None;
         self.selection_focus = None;
+        self.link_probe_signature = None;
+        self.hover_link_target = None;
         self.scroll_x = 0.0;
         self.scroll_y = 0.0;
         self.current_page = 0;
@@ -331,7 +343,7 @@ impl KvikkApp {
                     self.ocr_done.insert(page);
                     self.status = message;
                 }
-                BackendEvent::OcrUnavailable { message, .. } => {
+                BackendEvent::OcrUnavailable { doc_id, message } if doc_id == self.doc_id => {
                     self.ocr_available = false;
                     self.status = message;
                     self.ocr_queued.clear();
@@ -339,24 +351,34 @@ impl KvikkApp {
                     self.ocr_in_flight.clear();
                 }
                 BackendEvent::LinkResolved { doc_id, target } if doc_id == self.doc_id => {
-                    self.selection_anchor = None;
-                    self.selection_focus = None;
-                    match target {
-                        LinkTarget::Page(page) => self.goto_page(page),
-                        LinkTarget::Url(url) => {
-                            let lower = url.to_ascii_lowercase();
-                            if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:") {
-                                ctx.open_url(egui::OpenUrl::new_tab(url));
-                            } else {
-                                self.status = format!("Blocked unsupported link: {url}");
-                            }
-                        }
-                    }
+                    self.follow_link_target(ctx, target);
+                }
+                BackendEvent::LinkProbed { doc_id, probe_id, target }
+                    if doc_id == self.doc_id && probe_id == self.link_probe_id =>
+                {
+                    self.hover_link_target = target;
+                    ctx.request_repaint();
                 }
                 BackendEvent::Error { doc_id, message } if doc_id == 0 || doc_id == self.doc_id => {
                     self.status = message;
                 }
                 _ => {}
+            }
+        }
+    }
+
+    fn follow_link_target(&mut self, ctx: &egui::Context, target: LinkTarget) {
+        self.selection_anchor = None;
+        self.selection_focus = None;
+        match target {
+            LinkTarget::Page(page) => self.goto_page(page),
+            LinkTarget::Url(url) => {
+                let lower = url.to_ascii_lowercase();
+                if lower.starts_with("https://") || lower.starts_with("http://") || lower.starts_with("mailto:") {
+                    ctx.open_url(egui::OpenUrl::new_tab(url));
+                } else {
+                    self.status = format!("Blocked unsupported link: {url}");
+                }
             }
         }
     }
@@ -434,7 +456,6 @@ impl KvikkApp {
             for (byte_start, _) in lower.match_indices(&needle).take(500) {
                 self.search_results.push(SearchHit {
                     page,
-                    byte_start,
                     snippet: make_snippet(text, &lower, byte_start, needle.len()),
                 });
                 if self.search_results.len() >= 20_000 {
@@ -541,7 +562,7 @@ impl KvikkApp {
             if mode.pages_per_view() > 1 {
                 // Multi-page modes represent a complete viewport group. Preserve the
                 // page the reader was on, but align the containing group to the top so
-                // 3×2 / 5×2 / 7×3 never open halfway through their own grid.
+                // 3×2 / 5×2 / 7×3 / 10×4 / 20×8 never open halfway through their own grid.
                 let page = self
                     .capture_anchor(viewport, None)
                     .map(|anchor| anchor.page)
@@ -748,6 +769,8 @@ impl KvikkApp {
                             '5' => self.set_mode(ViewMode::Grid6, viewport),
                             '6' => self.set_mode(ViewMode::Grid10, viewport),
                             '7' => self.set_mode(ViewMode::Grid21, viewport),
+                            '8' => self.set_mode(ViewMode::Grid40, viewport),
+                            '9' => self.set_mode(ViewMode::Grid160, viewport),
                             '/' => self.open_search(),
                             '+' | '=' => {
                                 if let Some(viewport) = viewport {
@@ -1065,6 +1088,7 @@ impl KvikkApp {
             }
         }
 
+        self.handle_link_hover(ui, &response, &screen_pages);
         self.handle_selection_input(ui, &response, viewport, &screen_pages);
         self.handle_link_click(ui, &response, &screen_pages);
         self.prune_bitmap_cache(&visible_pages);
@@ -1112,6 +1136,60 @@ impl KvikkApp {
         }
     }
 
+    fn handle_link_hover(
+        &mut self,
+        ui: &egui::Ui,
+        response: &egui::Response,
+        screen_pages: &[(PlacedPage, Rect)],
+    ) {
+        if !response.hovered() {
+            self.link_probe_signature = None;
+            self.hover_link_target = None;
+            return;
+        }
+
+        let Some(pos) = ui.ctx().input(|i| i.pointer.hover_pos()) else {
+            self.link_probe_signature = None;
+            self.hover_link_target = None;
+            return;
+        };
+        let Some(document) = self.document.as_ref() else { return };
+        let Some((placed, rect)) = screen_pages.iter().find(|(_, rect)| rect.contains(pos)) else {
+            self.link_probe_signature = None;
+            self.hover_link_target = None;
+            return;
+        };
+
+        let metric = document.pages[placed.page];
+        let x_pt = ((pos.x - rect.left()) / rect.width()) * metric.width_pt;
+        let y_pt = metric.height_pt - ((pos.y - rect.top()) / rect.height()) * metric.height_pt;
+        // Quantizing to roughly one PDF point prevents a flood of worker messages while
+        // still making link hover feel immediate at normal reading scales.
+        let signature = (placed.page, x_pt.round() as i32, y_pt.round() as i32);
+
+        if self.link_probe_signature != Some(signature) {
+            self.link_probe_signature = Some(signature);
+            self.hover_link_target = None;
+            self.link_probe_id = self.link_probe_id.wrapping_add(1).max(1);
+            self.backend.high(BackendCommand::ProbeLink {
+                doc_id: self.doc_id,
+                probe_id: self.link_probe_id,
+                page: placed.page,
+                x_pt,
+                y_pt,
+            });
+        }
+
+        if let Some(target) = &self.hover_link_target {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            let text = match target {
+                LinkTarget::Page(page) => format!("Go to page {}", page + 1),
+                LinkTarget::Url(url) => url.clone(),
+            };
+            let _ = response.clone().on_hover_text_at_pointer(text);
+        }
+    }
+
     fn handle_link_click(
         &mut self,
         ui: &egui::Ui,
@@ -1127,7 +1205,17 @@ impl KvikkApp {
         let metric = document.pages[placed.page];
         let x_pt = ((pos.x - rect.left()) / rect.width()) * metric.width_pt;
         let y_pt = metric.height_pt - ((pos.y - rect.top()) / rect.height()) * metric.height_pt;
+        let signature = (placed.page, x_pt.round() as i32, y_pt.round() as i32);
 
+        if self.link_probe_signature == Some(signature) {
+            if let Some(target) = self.hover_link_target.clone() {
+                self.follow_link_target(ui.ctx(), target);
+                return;
+            }
+        }
+
+        // If the hover probe has not returned yet, resolve the click directly. This
+        // keeps fast clicks reliable even when PDFium is busy rendering another page.
         self.backend.high(BackendCommand::ResolveLink {
             doc_id: self.doc_id,
             page: placed.page,
@@ -1246,6 +1334,12 @@ impl KvikkApp {
                     }
                     if ui.selectable_label(self.view_mode == ViewMode::Grid21, "7 7×3").clicked() {
                         self.set_mode(ViewMode::Grid21, viewport_hint);
+                    }
+                    if ui.selectable_label(self.view_mode == ViewMode::Grid40, "8 10×4").clicked() {
+                        self.set_mode(ViewMode::Grid40, viewport_hint);
+                    }
+                    if ui.selectable_label(self.view_mode == ViewMode::Grid160, "9 20×8").clicked() {
+                        self.set_mode(ViewMode::Grid160, viewport_hint);
                     }
                     if ui.button("−").clicked() {
                         if let Some(rect) = viewport_hint {
@@ -1415,6 +1509,13 @@ impl eframe::App for KvikkApp {
         let ctx = ui.ctx().clone();
 
         if let Some(path) = self.startup_path.take() {
+            self.open_path(path);
+        }
+        if let Some(path) = crate::platform::take_open_paths()
+            .into_iter()
+            .rev()
+            .find(|path| is_pdf(path))
+        {
             self.open_path(path);
         }
         self.poll_backend(&ctx);

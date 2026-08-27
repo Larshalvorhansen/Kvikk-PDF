@@ -9,9 +9,11 @@ fi
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-command -v cargo >/dev/null 2>&1 || { echo "cargo is unavailable; enter nix-shell first." >&2; exit 1; }
-: "${PDFIUM_LIBRARY_PATH:?Enter the supplied nix-shell first.}"
-: "${TESSDATA_PREFIX:?Enter the supplied nix-shell first.}"
+VERSION="${KVIKK_VERSION:-$(awk -F'"' '/^version = / {print $2; exit}' Cargo.toml)}"
+
+command -v cargo >/dev/null 2>&1 || { echo "cargo is unavailable. Install Rust with rustup, or enter nix-shell." >&2; exit 1; }
+: "${PDFIUM_LIBRARY_PATH:?Set PDFIUM_LIBRARY_PATH, or enter the supplied nix-shell. For a no-Nix build use scripts/package-macos-release.sh.}"
+: "${TESSDATA_PREFIX:?Set TESSDATA_PREFIX, or enter the supplied nix-shell. For a no-Nix build use scripts/package-macos-release.sh.}"
 
 cargo build --release
 
@@ -21,6 +23,7 @@ MACOS="$CONTENTS/MacOS"
 RESOURCES="$CONTENTS/Resources"
 rm -rf "$APP_PATH"
 mkdir -p "$MACOS" "$RESOURCES"
+cp assets/Credits.html "$RESOURCES/Credits.html"
 cp target/release/kvikk "$MACOS/kvikk-bin"
 chmod +x "$MACOS/kvikk-bin"
 
@@ -62,15 +65,31 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>kvikk</string>
     <key>CFBundleIdentifier</key><string>no.halvorhansen.kvikk</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>0.3.0</string>
-    <key>CFBundleVersion</key><string>0.3.0</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
+    <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Lars Halvor. MIT License.</string>
+    <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>CFBundleDocumentTypes</key><array><dict>
+      <key>CFBundleTypeName</key><string>PDF document</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key><array><string>com.adobe.pdf</string></array>
+      <key>CFBundleTypeExtensions</key><array><string>pdf</string></array>
+    </dict></array>
 $ICON_PLIST
 </dict></plist>
 PLIST
 
 touch "$APP_PATH"
 codesign --force --deep --sign - "$APP_PATH" >/dev/null 2>&1 || true
+
+# Register the finished bundle with Launch Services so Finder can offer Kvikk
+# under Open With immediately after a local install.
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f "$APP_PATH" >/dev/null 2>&1 || true
+fi
 printf '\nInstalled: %s\n' "$APP_PATH"
 echo "Launch kvikk pdf from Finder, Spotlight, or the Dock."
 open -R "$APP_PATH" || true

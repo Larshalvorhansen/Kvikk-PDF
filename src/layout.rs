@@ -1,6 +1,6 @@
 use crate::model::{
     DocumentLayout, LayoutRow, PageMetric, PlacedPage, ViewMode, BASE_PX_PER_POINT, GRID_GAP,
-    PAGE_GAP, PAGE_MARGIN,
+    GRID_MARGIN, PAGE_GAP, PAGE_MARGIN,
 };
 
 pub fn build_layout(
@@ -20,10 +20,13 @@ pub fn build_layout(
     let mut content_width = viewport_width;
 
     if let Some((cols, grid_rows)) = mode.grid_spec() {
-        let cell_w = ((usable_w - GRID_GAP * cols.saturating_sub(1) as f32) / cols as f32).max(24.0);
-        let cell_h = ((usable_h - GRID_GAP * grid_rows.saturating_sub(1) as f32) / grid_rows as f32).max(24.0);
+        let grid_usable_w = (viewport_width - GRID_MARGIN * 2.0).max(64.0);
+        let grid_usable_h = (viewport_height - GRID_MARGIN * 2.0).max(64.0);
+        let cell_w = ((grid_usable_w - GRID_GAP * cols.saturating_sub(1) as f32) / cols as f32).max(24.0);
+        let cell_h = ((grid_usable_h - GRID_GAP * grid_rows.saturating_sub(1) as f32) / grid_rows as f32).max(24.0);
         let pages_per_group = cols * grid_rows;
         let mut group_start = 0usize;
+        y = GRID_MARGIN;
 
         while group_start < pages.len() {
             let group_top = y;
@@ -43,7 +46,7 @@ pub fn build_layout(
                         .clamp(0.02, 5.0);
                     let w = raw_w * scale;
                     let h = raw_h * scale;
-                    let cell_x = PAGE_MARGIN + col_index as f32 * (cell_w + GRID_GAP);
+                    let cell_x = GRID_MARGIN + col_index as f32 * (cell_w + GRID_GAP);
                     let x = cell_x + (cell_w - w) * 0.5;
                     let page_y = row_y + (cell_h - h) * 0.5;
 
@@ -67,7 +70,7 @@ pub fn build_layout(
             }
 
             // Every multi-page group occupies exactly one viewport worth of document
-            // height. This makes Space/Shift+Space land on stable 2/3/6/10/21-page
+            // height. This makes Space/Shift+Space land on stable 2/3/6/10/21/40/160-page
             // boundaries instead of depending on individual page aspect ratios.
             y += viewport_height;
             group_start += pages_per_group;
@@ -97,18 +100,15 @@ pub fn build_layout(
         }
     }
 
+    let trailing_margin = if mode.grid_spec().is_some() { GRID_MARGIN } else { PAGE_MARGIN };
     let content_height = rows
         .last()
-        .map(|row| row.y + row.h + PAGE_MARGIN)
+        .map(|row| row.y + row.h + trailing_margin)
         .unwrap_or(viewport_height);
 
     DocumentLayout {
         rows,
         content_width,
         content_height,
-        viewport_width,
-        viewport_height,
-        mode: Some(mode),
-        manual_zoom,
     }
 }

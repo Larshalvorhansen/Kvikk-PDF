@@ -23,6 +23,7 @@ pub enum BackendCommand {
     ExtractText { doc_id: u64, page: usize },
     Ocr { doc_id: u64, page: usize },
     ResolveLink { doc_id: u64, page: usize, x_pt: f32, y_pt: f32 },
+    ProbeLink { doc_id: u64, probe_id: u64, page: usize, x_pt: f32, y_pt: f32 },
     Shutdown,
 }
 
@@ -50,6 +51,7 @@ pub enum BackendEvent {
     OcrFailed { doc_id: u64, page: usize, message: String },
     OcrUnavailable { doc_id: u64, message: String },
     LinkResolved { doc_id: u64, target: LinkTarget },
+    LinkProbed { doc_id: u64, probe_id: u64, target: Option<LinkTarget> },
     Error { doc_id: u64, message: String },
 }
 
@@ -291,6 +293,16 @@ fn renderer_loop(
                     }),
                 }
             }
+            BackendCommand::ProbeLink { doc_id, probe_id, page, x_pt, y_pt } => {
+                if doc_id != active_doc_id {
+                    continue;
+                }
+                let Some(doc) = document.as_ref() else { continue };
+                match resolve_link(doc, page, x_pt, y_pt) {
+                    Ok(target) => events.send(BackendEvent::LinkProbed { doc_id, probe_id, target }),
+                    Err(_) => events.send(BackendEvent::LinkProbed { doc_id, probe_id, target: None }),
+                }
+            }
         }
     }
 }
@@ -327,7 +339,6 @@ fn open_document<'a>(pdfium: &'a Pdfium, path: &Path) -> Result<(PdfDocument<'a>
         .to_owned();
 
     let info = DocumentInfo {
-        path: path.to_path_buf(),
         title: embedded_title.unwrap_or(fallback),
         pages,
     };
@@ -426,7 +437,6 @@ fn extract_page_text(document: &PdfDocument<'_>, page_index: usize) -> Result<Pa
         page: page_index,
         text,
         glyphs,
-        is_ocr: false,
     })
 }
 
