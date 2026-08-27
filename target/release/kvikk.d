@@ -1,0 +1,1 @@
+/Users/lhh/Documents/Kvikk-PDF/target/release/kvikk: /Users/lhh/Documents/Kvikk-PDF/assets/logo.png /Users/lhh/Documents/Kvikk-PDF/src/app.rs /Users/lhh/Documents/Kvikk-PDF/src/backend.rs /Users/lhh/Documents/Kvikk-PDF/src/layout.rs /Users/lhh/Documents/Kvikk-PDF/src/main.rs /Users/lhh/Documents/Kvikk-PDF/src/model.rs

@@ -93,28 +93,6 @@ This builds and installs:
 
 After that, launch it from Finder, Spotlight, Raycast, Alfred, or the Dock. You do not need to enter `nix-shell` every time.
 
-## GitHub releases
-
-The repository includes `.github/workflows/release.yml`.
-
-Every tag matching `v*` builds release archives for macOS and Windows and attaches them to the corresponding GitHub Release.
-
-For example:
-
-```sh
-git tag v0.3.0
-git push origin v0.3.0
-```
-
-The workflow creates artifacts similar to:
-
-```text
-kvikk-pdf-0.3.0-macos-x86_64.zip
-kvikk-pdf-0.3.0-windows-x64.zip
-```
-
-The exact macOS architecture follows the GitHub-hosted runner used by the workflow. The local Nix installer builds natively for your Mac, including Apple Silicon.
-
 ### Windows release dependencies
 
 The Windows workflow uses vcpkg to build Tesseract and Leptonica. This is the setup recommended by the Rust `leptess` bindings. Runtime DLLs, PDFium, and OCR data are copied beside `kvikk.exe` in the release archive.
@@ -124,27 +102,6 @@ The Windows workflow uses vcpkg to build Tesseract and Leptonica. This is the se
 The macOS workflow installs Tesseract/Leptonica with Homebrew and bundles their non-system dynamic libraries into the `.app`. PDFium and `eng`/`nor` OCR data are included in the app bundle.
 
 The CI-produced macOS app is ad-hoc signed. A future public distribution can add an Apple Developer ID certificate and notarization without changing the application architecture.
-
-## Creating the public GitHub repository
-
-With the GitHub CLI installed and authenticated:
-
-```sh
-git init
-git add .
-git commit -m "Initial release of kvikk pdf"
-git branch -M main
-gh repo create kvikk-pdf --public --source=. --remote=origin --push
-```
-
-Then create the first downloadable release:
-
-```sh
-git tag v0.3.0
-git push origin v0.3.0
-```
-
-GitHub Actions will do the delightfully repetitive packaging work from there.
 
 ## Architecture
 
