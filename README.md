@@ -2,11 +2,23 @@
   <img src="assets/logo.png" width="180" alt="kvikk pdf logo">
 </p>
 
-# kvikk pdf
+# Kvikk-PDF
 
-**kvikk pdf** is a fast, keyboard-first native PDF reader for deep reading, skimming, and rapid navigation.
+**Kvikk** (meaning rapid in norwegian) is a fast, keyboard-first native rapid PDF navigation and flexible view customization.
+The goal is to make deep reading and skimming PDFs as frictionless as possible.
 
-It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract OCR. The reader keeps the interface deliberately small while providing unusually fast keyboard navigation, pacing, flexible page layouts, search, selectable text, OCR fallback, inversion, and high-resolution rendering.
+The interface deliberately small while providing unusually fast keyboard navigation, pacing, flexible page layouts, search, selectable text, OCR fallback, inversion, and high-resolution rendering.
+
+It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract OCR.
+
+This software is designed for
+
+Written in Rust by Lars Halvor, in dialogue with an LLM.
+
+> **Kvikk is completely free and open source.**
+
+> If you'd like to say thanks, the best thing you can do is to contribute to the project, visit my website (**halvorhansen.no**)
+> or just send me a message on any of my socials!
 
 ## Highlights
 
@@ -24,43 +36,31 @@ It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract 
 
 ## Keyboard shortcuts
 
-| Key | Action |
-| --- | --- |
-| `Ctrl/⌘ F` or `/` | Search inside the PDF |
+| Key                     | Action                        |
+| ----------------------- | ----------------------------- |
+| `Ctrl/⌘ F` or `/`       | Search inside the PDF         |
 | `Enter` / `Shift+Enter` | Next / previous search result |
-| `g45` | Go to page 45 |
-| Hold `?` | Show keyboard commands |
-| `S` | Show / hide toolbar |
-| `I` | Invert PDF |
-| `P` or `K` | Play / pause pacer |
-| `J` | Slower pacer |
-| `L` | Faster pacer |
-| `Space` | Next page / page group |
-| `Shift+Space` | Previous page / page group |
-| `+` / `-` | Zoom in / out |
-| `O` | Reset zoom to 100% |
-| Pinch / Ctrl-scroll | Zoom around pointer |
-| `1` | Fit width |
-| `2` | Fit height |
-| `3` | 2 pages, 2×1 |
-| `4` | 3 pages, 3×1 |
-| `5` | 6 pages, 3×2 |
-| `6` | 10 pages, 5×2 |
-| `7` | 21 pages, 7×3 |
-| `F` | Toggle fullscreen |
-| `Ctrl/⌘ C` | Copy selected text |
-
-## About
-
-> This software is designed for rapid PDF navigation and flexible view customization. The goal is to make deep reading and skimming PDFs as frictionless as possible.
->
-> Written in Rust by Lars Halvor, in dialogue with an LLM.
->
-> **kvikk pdf is completely free and open source.**
->
-> If you'd like to say thanks, the best thing you can do is visit my website or send me a message on any of my social platforms.
->
-> **halvorhansen.no**
+| `g45`                   | Go to page 45                 |
+| Hold `?`                | Show keyboard commands        |
+| `S`                     | Show / hide toolbar           |
+| `I`                     | Invert PDF                    |
+| `P` or `K`              | Play / pause pacer            |
+| `J`                     | Slower pacer                  |
+| `L`                     | Faster pacer                  |
+| `Space`                 | Next page / page group        |
+| `Shift+Space`           | Previous page / page group    |
+| `+` / `-`               | Zoom in / out                 |
+| Pinch / Ctrl-scroll     | Zoom around pointer           |
+| `O`                     | Reset zoom to 100%            |
+| `1`                     | Fit width                     |
+| `2`                     | Fit height                    |
+| `3`                     | 2 pages, 2×1                  |
+| `4`                     | 3 pages, 3×1                  |
+| `5`                     | 6 pages, 3×2                  |
+| `6`                     | 10 pages, 5×2                 |
+| `7`                     | 21 pages, 7×3                 |
+| `F`                     | Toggle fullscreen             |
+| `Ctrl/⌘ C`              | Copy selected text            |
 
 ## Development with Nix
 
