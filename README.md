@@ -2,11 +2,19 @@
   <img src="assets/logo.png" width="180" alt="kvikk pdf logo">
 </p>
 
-# kvikk pdf
+# Kvikk PDF
 
-**kvikk pdf** is a fast, keyboard-first native PDF reader for deep reading, skimming, and rapid navigation.
+Designed for rapid PDF navigation and flexible view customization. The goal is to make both deep reading and quickly skimming PDFs as fast and frictionless as possible.
 
-It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract OCR. The reader keeps the interface deliberately small while providing unusually fast keyboard navigation, pacing, flexible page layouts, search, selectable text, OCR fallback, inversion, and high-resolution rendering.
+Written in Rust in dialogue with an LLM.
+
+It's completely free and open source! :)
+
+If you’d like to say thanks, the best thing you can do is to contribute to this repo. Feel free to leave a message!
+
+[halvorhansen.no](https://halvorhansen.no)
+
+Licensed under the MIT License.
 
 ## Highlights
 
@@ -39,10 +47,10 @@ It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract 
 | `Space` | Next page / page group |
 | `Shift+Space` | Snap to the top of the current page/group; if already there, go to the previous page/group |
 | `+` / `-` | Zoom in / out |
-| `O` or `⌘O` | Open a PDF |
-| `⌘T` | New empty tab |
-| `⌘W` | Close current tab |
-| `⌘⇧Tab` or `⌘⇧T` | Reopen the previously closed tab |
+| `O` or `Ctrl/⌘ O` | Open a PDF |
+| `Ctrl/⌘ T` | New empty tab |
+| `Ctrl/⌘ W` | Close current tab |
+| `Ctrl/⌘ + Shift + T` | Reopen the previously closed tab |
 | `0` | Reset zoom to 100% |
 | Pinch / Ctrl-scroll | Zoom around pointer |
 | `1` | Fit width |
@@ -54,34 +62,24 @@ It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract 
 | `7` | 5 rows of pages; columns adapt to the window |
 | `8` | 7 rows of pages; columns adapt to the window |
 | `9` | Dynamic overview: fit all or nearly all pages on screen |
-| `⌘1`–`⌘8` | Switch to tabs 1–8 |
-| `⌘9` | Switch to the last tab |
+| `Ctrl/⌘ 1`–`8` | Switch to tabs 1–8 |
+| `Ctrl/⌘ 9` | Switch to the last tab |
 | `F` | Toggle fullscreen |
 | `Ctrl/⌘ C` | Copy selected text |
 
 Modes `4`–`8` keep a fixed row count but calculate their column count from the current window shape and the PDF’s average page aspect ratio. Resizing the window therefore changes how many pages fit in each navigation group without changing the requested number of rows. Mode `9` remains a fully dynamic whole-document overview. For example, a ten-page portrait PDF will typically use a compact layout such as 5×2, while a roughly 300-page PDF may use around 24–26 columns depending on the window aspect ratio.
 
-On macOS, `⌘Tab`/`⌘⇧Tab` are normally reserved by the operating system for application switching, so Kvikk also supports the conventional `⌘⇧T` shortcut for reopening the most recently closed tab.
+On macOS, `⌘Tab`/`⌘⇧Tab` are normally reserved by the operating system for application switching, so Kvikk supports the conventional `Ctrl/⌘ + Shift + T` shortcut for reopening the most recently closed tab instead.
 
 ## About
-
-The in-app About window contains the text below. Packaged macOS builds also include the same credits in AppKit's native **About kvikk pdf** panel.
-
-> This software is designed for rapid PDF navigation and flexible view customization. The goal is to make deep reading and skimming PDFs as frictionless as possible.
->
-> Written in Rust by Lars Halvor, in dialogue with an LLM.
->
-> **kvikk pdf is completely free and open source.**
->
-> If you'd like to say thanks, the best thing you can do is visit my website or send me a message on any of my social platforms.
->
-> **halvorhansen.no**
+This software was initially built as a tool for personal use. But why not share it with others? 
+It is built around PDFium, egui/eframe, wgpu, and Tesseract OCR. The reader keeps the interface deliberately small while providing unusually fast keyboard navigation, pacing, flexible page layouts, search, selectable text, OCR fallback, inversion, and high-resolution rendering.
 
 ## Install kvikk pdf (no Nix required)
 
 ### macOS
 
-For normal users, download the `.dmg` from a GitHub Release, open it, and drag **kvikk pdf** onto the **Applications** shortcut. That is the recommended installation method; Nix and Rust are not required.
+For normal users, download the `.dmg` from the GitHub Release, open it, and drag **kvikk pdf** onto the **Applications** shortcut. That is the recommended installation method; Nix and Rust are not required.
 
 The release DMG contains the application, PDFium, OCR libraries, and English/Norwegian OCR data. Its **Applications** item is an explicit link to the system `/Applications` directory, not `~/Applications` or a Home Manager folder.
 
@@ -164,27 +162,6 @@ The Windows workflow uses vcpkg to build Tesseract and Leptonica. This is the se
 The macOS workflow installs Tesseract/Leptonica with Homebrew and bundles their non-system dynamic libraries into the `.app`. PDFium and `eng`/`nor` OCR data are included in the app bundle.
 
 The CI-produced macOS app is ad-hoc signed. A future public distribution can add an Apple Developer ID certificate and notarization without changing the application architecture.
-
-## Creating the public GitHub repository
-
-With the GitHub CLI installed and authenticated:
-
-```sh
-git init
-git add .
-git commit -m "Initial release of kvikk pdf"
-git branch -M main
-gh repo create kvikk-pdf --public --source=. --remote=origin --push
-```
-
-Then create the first downloadable release:
-
-```sh
-git tag v0.6.2
-git push origin v0.6.2
-```
-
-GitHub Actions will do the delightfully repetitive packaging work from there.
 
 ## Architecture
 
