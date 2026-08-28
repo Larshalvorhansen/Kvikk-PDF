@@ -25,20 +25,26 @@ const COMMANDS: &[(&str, &str)] = &[
     ("J", "Slower pacer"),
     ("L", "Faster pacer"),
     ("Space", "Next page / page group"),
-    ("Shift + Space", "Previous page / page group"),
+    ("Shift + Space", "Top of current page/group, then previous"),
     ("+", "Zoom in"),
     ("−", "Zoom out"),
-    ("O", "Reset zoom to 100%"),
+    ("O / ⌘O", "Open PDF"),
+    ("⌘T", "New empty tab"),
+    ("⌘W", "Close current tab"),
+    ("⌘⇧Tab / ⌘⇧T", "Reopen previously closed tab"),
+    ("0", "Reset zoom to 100%"),
     ("Pinch / Ctrl-scroll", "Zoom around the pointer"),
     ("1", "Fit page width"),
     ("2", "Fit page height"),
     ("3", "2 pages (2×1)"),
-    ("4", "3 pages (3×1)"),
-    ("5", "6 pages (3×2)"),
-    ("6", "10 pages (5×2)"),
-    ("7", "21 pages (7×3)"),
-    ("8", "40 pages (10×4)"),
-    ("9", "160 pages (20×8)"),
+    ("4", "2 rows, automatic columns"),
+    ("5", "3 rows, automatic columns"),
+    ("6", "4 rows, automatic columns"),
+    ("7", "5 rows, automatic columns"),
+    ("8", "7 rows, automatic columns"),
+    ("9", "Overview: fit the whole PDF"),
+    ("⌘1–⌘8", "Switch to tab 1–8"),
+    ("⌘9", "Switch to the last tab"),
     ("F", "Toggle fullscreen"),
     ("Ctrl/⌘ C", "Copy selected PDF text"),
 ];
@@ -69,9 +75,50 @@ impl BitmapEntry {
     }
 }
 
+
+/// Per-tab state that is inexpensive enough to keep around while another tab is
+/// active. Page bitmaps are deliberately not retained for inactive tabs; PDFium
+/// keeps the parsed documents open and visible pages are rendered again on demand.
+struct TabState {
+    document: Option<DocumentInfo>,
+    view_mode: ViewMode,
+    manual_zoom: f32,
+    invert: bool,
+    scroll_x: f32,
+    scroll_y: f32,
+    layout: DocumentLayout,
+    layout_dirty: bool,
+    pending_anchor: Option<ScrollAnchor>,
+    pending_goto: Option<usize>,
+    current_page: usize,
+    native_text: Vec<Option<PageTextData>>,
+    search_text: Vec<Option<String>>,
+    ocr_done: HashSet<usize>,
+    ocr_available: bool,
+    search_open: bool,
+    search_query: String,
+    search_results: Vec<SearchHit>,
+    search_result_index: Option<usize>,
+    search_index_cursor: usize,
+    selection_anchor: Option<SelectionPoint>,
+    selection_focus: Option<SelectionPoint>,
+    status: String,
+}
+
+struct TabSlot {
+    doc_id: u64,
+    path: Option<PathBuf>,
+    title: String,
+    state: Option<TabState>,
+}
+
 pub struct KvikkApp {
     backend: PdfBackend,
     doc_id: u64,
+    next_doc_id: u64,
+    tabs: Vec<TabSlot>,
+    closed_tabs: Vec<TabSlot>,
+    active_tab: Option<usize>,
     document: Option<DocumentInfo>,
     view_mode: ViewMode,
     manual_zoom: f32,
@@ -161,6 +208,10 @@ impl KvikkApp {
         Self {
             backend,
             doc_id: 0,
+            next_doc_id: 0,
+            tabs: Vec::new(),
+            closed_tabs: Vec::new(),
+            active_tab: None,
             document: None,
             view_mode: ViewMode::FitWidth,
             manual_zoom: 1.0,
@@ -229,14 +280,123 @@ impl KvikkApp {
         self.render_debounce_frames = debounce_frames;
     }
 
-    fn open_path(&mut self, path: PathBuf) {
-        if !is_pdf(&path) {
-            self.status = "That file does not look like a PDF.".into();
-            return;
-        }
+    fn active_tab_title(&self) -> Option<&str> {
+        self.active_tab
+            .and_then(|index| self.tabs.get(index))
+            .map(|tab| tab.title.as_str())
+    }
 
-        self.doc_id = self.doc_id.wrapping_add(1).max(1);
-        self.invalidate_render_requests(0);
+    fn update_window_title(&self, ctx: &egui::Context) {
+        let title = self
+            .active_tab_title()
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or("kvikk pdf");
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(if title == "kvikk pdf" {
+            "kvikk pdf".into()
+        } else {
+            format!("{title} — kvikk pdf")
+        }));
+    }
+
+    fn capture_current_tab_state(&mut self) -> TabState {
+        // Requests already sent to PDFium may still finish after the tab becomes
+        // inactive. We intentionally forget their in-flight bookkeeping so the
+        // page can simply be requested again if/when this tab becomes active.
+        self.bitmaps.clear();
+        self.render_in_flight.clear();
+        self.render_failed.clear();
+        self.text_requested.clear();
+        self.ocr_queued.clear();
+        self.ocr_queued_set.clear();
+        self.ocr_in_flight.clear();
+        self.goto_active = false;
+        self.goto_buffer.clear();
+        self.goto_deadline = None;
+        self.search_focus_requested = false;
+        self.link_probe_signature = None;
+        self.hover_link_target = None;
+
+        TabState {
+            document: self.document.take(),
+            view_mode: self.view_mode,
+            manual_zoom: self.manual_zoom,
+            invert: self.invert,
+            scroll_x: self.scroll_x,
+            scroll_y: self.scroll_y,
+            layout: std::mem::take(&mut self.layout),
+            layout_dirty: self.layout_dirty,
+            pending_anchor: self.pending_anchor.take(),
+            pending_goto: self.pending_goto.take(),
+            current_page: self.current_page,
+            native_text: std::mem::take(&mut self.native_text),
+            search_text: std::mem::take(&mut self.search_text),
+            ocr_done: std::mem::take(&mut self.ocr_done),
+            ocr_available: self.ocr_available,
+            search_open: self.search_open,
+            search_query: std::mem::take(&mut self.search_query),
+            search_results: std::mem::take(&mut self.search_results),
+            search_result_index: self.search_result_index.take(),
+            search_index_cursor: self.search_index_cursor,
+            selection_anchor: self.selection_anchor.take(),
+            selection_focus: self.selection_focus.take(),
+            status: std::mem::take(&mut self.status),
+        }
+    }
+
+    fn save_active_tab(&mut self) {
+        let Some(index) = self.active_tab else { return };
+        let state = self.capture_current_tab_state();
+        if let Some(tab) = self.tabs.get_mut(index) {
+            tab.state = Some(state);
+        }
+    }
+
+    fn restore_tab_state(&mut self, state: TabState) {
+        self.document = state.document;
+        self.view_mode = state.view_mode;
+        self.manual_zoom = state.manual_zoom;
+        self.invert = state.invert;
+        self.scroll_x = state.scroll_x;
+        self.scroll_y = state.scroll_y;
+        self.layout = state.layout;
+        self.layout_dirty = state.layout_dirty;
+        self.pending_anchor = state.pending_anchor;
+        self.pending_goto = state.pending_goto;
+        self.current_page = state.current_page;
+        self.native_text = state.native_text;
+        self.search_text = state.search_text;
+        self.ocr_done = state.ocr_done;
+        self.ocr_available = state.ocr_available;
+        self.search_open = state.search_open;
+        self.search_query = state.search_query;
+        self.search_results = state.search_results;
+        self.search_result_index = state.search_result_index;
+        self.search_index_cursor = state.search_index_cursor;
+        self.selection_anchor = state.selection_anchor;
+        self.selection_focus = state.selection_focus;
+        self.status = state.status;
+
+        self.bitmaps.clear();
+        self.render_in_flight.clear();
+        self.render_failed.clear();
+        self.text_requested.clear();
+        self.ocr_queued.clear();
+        self.ocr_queued_set.clear();
+        self.ocr_in_flight.clear();
+        self.search_focus_requested = false;
+        self.goto_active = false;
+        self.goto_buffer.clear();
+        self.goto_deadline = None;
+        self.link_probe_signature = None;
+        self.hover_link_target = None;
+        self.is_playing = false;
+        self.render_generation = self.backend.bump_render_generation();
+        self.render_debounce_frames = 0;
+    }
+
+    fn reset_current_for_new_tab(&mut self, doc_id: u64, path: &Path) {
+        self.doc_id = doc_id;
+        self.render_generation = self.backend.bump_render_generation();
         self.document = None;
         self.bitmaps.clear();
         self.render_in_flight.clear();
@@ -248,12 +408,20 @@ impl KvikkApp {
         self.ocr_queued_set.clear();
         self.ocr_in_flight.clear();
         self.ocr_done.clear();
+        self.ocr_available = true;
+        self.pending_anchor = None;
         self.pending_goto = None;
+        self.search_open = false;
+        self.search_focus_requested = false;
+        self.search_query.clear();
         self.search_results.clear();
         self.search_result_index = None;
         self.search_index_cursor = 0;
         self.selection_anchor = None;
         self.selection_focus = None;
+        self.goto_active = false;
+        self.goto_buffer.clear();
+        self.goto_deadline = None;
         self.link_probe_signature = None;
         self.hover_link_target = None;
         self.scroll_x = 0.0;
@@ -261,25 +429,264 @@ impl KvikkApp {
         self.current_page = 0;
         self.is_playing = false;
         self.view_mode = ViewMode::FitWidth;
+        self.manual_zoom = 1.0;
+        self.layout = DocumentLayout::default();
         self.layout_dirty = true;
-        self.status = format!("Opening {}…", path.file_name().and_then(|s| s.to_str()).unwrap_or("PDF"));
-        self.backend.high(BackendCommand::Open { doc_id: self.doc_id, path });
+        self.render_debounce_frames = 0;
+        self.status = format!(
+            "Opening {}…",
+            path.file_name().and_then(|s| s.to_str()).unwrap_or("PDF")
+        );
     }
+
+    fn reset_current_blank(&mut self) {
+        self.doc_id = 0;
+        self.render_generation = self.backend.bump_render_generation();
+        self.document = None;
+        self.bitmaps.clear();
+        self.render_in_flight.clear();
+        self.render_failed.clear();
+        self.native_text.clear();
+        self.search_text.clear();
+        self.text_requested.clear();
+        self.ocr_queued.clear();
+        self.ocr_queued_set.clear();
+        self.ocr_in_flight.clear();
+        self.ocr_done.clear();
+        self.ocr_available = true;
+        self.pending_anchor = None;
+        self.pending_goto = None;
+        self.search_open = false;
+        self.search_focus_requested = false;
+        self.search_query.clear();
+        self.search_results.clear();
+        self.search_result_index = None;
+        self.search_index_cursor = 0;
+        self.selection_anchor = None;
+        self.selection_focus = None;
+        self.goto_active = false;
+        self.goto_buffer.clear();
+        self.goto_deadline = None;
+        self.link_probe_signature = None;
+        self.hover_link_target = None;
+        self.scroll_x = 0.0;
+        self.scroll_y = 0.0;
+        self.current_page = 0;
+        self.is_playing = false;
+        self.view_mode = ViewMode::FitWidth;
+        self.manual_zoom = 1.0;
+        self.layout = DocumentLayout::default();
+        self.layout_dirty = true;
+        self.render_debounce_frames = 0;
+        self.status = "Drop a PDF here or press O to open one.".into();
+    }
+
+    fn open_path(&mut self, path: PathBuf) {
+        if !is_pdf(&path) {
+            self.status = "That file does not look like a PDF.".into();
+            return;
+        }
+
+        self.next_doc_id = self.next_doc_id.wrapping_add(1).max(1);
+        let doc_id = self.next_doc_id;
+        let fallback_title = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("PDF")
+            .to_owned();
+
+        // Opening a PDF into a deliberately-created empty tab should fill that tab
+        // instead of leaving a useless blank tab behind. All other opens create a tab.
+        let replace_blank = self
+            .active_tab
+            .filter(|&index| {
+                self.tabs
+                    .get(index)
+                    .is_some_and(|tab| tab.doc_id == 0 && tab.path.is_none())
+            });
+
+        if let Some(index) = replace_blank {
+            if let Some(tab) = self.tabs.get_mut(index) {
+                tab.doc_id = doc_id;
+                tab.path = Some(path.clone());
+                tab.title = fallback_title;
+                tab.state = None;
+            }
+        } else {
+            self.save_active_tab();
+            let index = self.tabs.len();
+            self.tabs.push(TabSlot {
+                doc_id,
+                path: Some(path.clone()),
+                title: fallback_title,
+                state: None,
+            });
+            self.active_tab = Some(index);
+        }
+
+        self.reset_current_for_new_tab(doc_id, &path);
+        self.backend.high(BackendCommand::Open { doc_id, path });
+    }
+
+    fn open_pdf_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
+            self.open_path(path);
+        }
+    }
+
+    fn new_tab(&mut self, ctx: &egui::Context) {
+        self.save_active_tab();
+        let index = self.tabs.len();
+        self.tabs.push(TabSlot {
+            doc_id: 0,
+            path: None,
+            title: "New Tab".into(),
+            state: None,
+        });
+        self.active_tab = Some(index);
+        self.reset_current_blank();
+        self.update_window_title(ctx);
+        ctx.request_repaint();
+    }
+
+    fn close_current_tab(&mut self, ctx: &egui::Context) {
+        let Some(index) = self.active_tab else { return };
+        if index >= self.tabs.len() {
+            return;
+        }
+
+        // Capture the active reader state before removing the slot. Closed PDF tabs
+        // remain resident in PDFium for a small undo history, making reopen instant.
+        self.save_active_tab();
+        let closed = self.tabs.remove(index);
+        if closed.doc_id != 0 {
+            self.closed_tabs.push(closed);
+            const CLOSED_TAB_HISTORY: usize = 12;
+            if self.closed_tabs.len() > CLOSED_TAB_HISTORY {
+                let forgotten = self.closed_tabs.remove(0);
+                if forgotten.doc_id != 0 {
+                    self.backend.high(BackendCommand::Close { doc_id: forgotten.doc_id });
+                }
+            }
+        }
+
+        if self.tabs.is_empty() {
+            self.active_tab = None;
+            self.reset_current_blank();
+        } else {
+            let next_index = index.min(self.tabs.len() - 1);
+            let doc_id = self.tabs[next_index].doc_id;
+            let state = self.tabs[next_index].state.take();
+            self.active_tab = Some(next_index);
+            self.doc_id = doc_id;
+            if let Some(state) = state {
+                self.restore_tab_state(state);
+            } else {
+                // This can only be a freshly-created empty tab.
+                self.reset_current_blank();
+            }
+        }
+
+        self.update_window_title(ctx);
+        ctx.request_repaint();
+    }
+
+    fn reopen_closed_tab(&mut self, ctx: &egui::Context) {
+        let Some(mut tab) = self.closed_tabs.pop() else { return };
+        self.save_active_tab();
+
+        let doc_id = tab.doc_id;
+        let state = tab.state.take();
+        let index = self.tabs.len();
+        self.tabs.push(tab);
+        self.active_tab = Some(index);
+        self.doc_id = doc_id;
+
+        if let Some(state) = state {
+            self.restore_tab_state(state);
+        } else if let Some(path) = self.tabs[index].path.clone() {
+            // Defensive fallback for a tab closed during its initial open.
+            self.reset_current_for_new_tab(doc_id, &path);
+            self.backend.high(BackendCommand::Open { doc_id, path });
+        } else {
+            self.reset_current_blank();
+        }
+
+        self.update_window_title(ctx);
+        ctx.request_repaint();
+    }
+
+    fn switch_tab(&mut self, ctx: &egui::Context, index: usize) {
+        if self.active_tab == Some(index) || index >= self.tabs.len() {
+            return;
+        }
+
+        self.save_active_tab();
+        let doc_id = self.tabs[index].doc_id;
+        let Some(state) = self.tabs[index].state.take() else {
+            return;
+        };
+        self.active_tab = Some(index);
+        self.doc_id = doc_id;
+        self.restore_tab_state(state);
+        self.update_window_title(ctx);
+        ctx.request_repaint();
+    }
+
+    fn switch_tab_shortcut(&mut self, ctx: &egui::Context, number: usize) {
+        if self.tabs.is_empty() {
+            return;
+        }
+        let index = if number == 9 {
+            self.tabs.len() - 1
+        } else {
+            number.saturating_sub(1)
+        };
+        if index < self.tabs.len() {
+            self.switch_tab(ctx, index);
+        }
+    }
+
 
     fn poll_backend(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.backend.events.try_recv() {
             match event {
-                BackendEvent::Opened { doc_id, info } if doc_id == self.doc_id => {
+                BackendEvent::Opened { doc_id, info } => {
                     let count = info.pages.len();
-                    self.native_text = vec![None; count];
-                    self.search_text = vec![None; count];
-                    self.current_page = 0;
-                    self.scroll_x = 0.0;
-                    self.scroll_y = 0.0;
-                    self.layout_dirty = true;
-                    self.status = format!("{} pages", count);
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Title(format!("{} — kvikk pdf", info.title)));
-                    self.document = Some(info);
+                    if doc_id == self.doc_id {
+                        if let Some(index) = self.active_tab {
+                            if let Some(tab) = self.tabs.get_mut(index) {
+                                tab.title = info.title.clone();
+                            }
+                        }
+                        self.native_text = vec![None; count];
+                        self.search_text = vec![None; count];
+                        self.current_page = 0;
+                        self.scroll_x = 0.0;
+                        self.scroll_y = 0.0;
+                        self.layout_dirty = true;
+                        self.status.clear();
+                        self.document = Some(info);
+                        self.update_window_title(ctx);
+                    } else if let Some(tab) = self
+                        .tabs
+                        .iter_mut()
+                        .chain(self.closed_tabs.iter_mut())
+                        .find(|tab| tab.doc_id == doc_id)
+                    {
+                        tab.title = info.title.clone();
+                        if let Some(state) = tab.state.as_mut() {
+                            state.native_text = vec![None; count];
+                            state.search_text = vec![None; count];
+                            state.current_page = 0;
+                            state.scroll_x = 0.0;
+                            state.scroll_y = 0.0;
+                            state.layout_dirty = true;
+                            state.status.clear();
+                            state.document = Some(info);
+                        }
+                    }
                 }
                 BackendEvent::Rendered {
                     doc_id,
@@ -343,7 +750,7 @@ impl KvikkApp {
                     self.ocr_done.insert(page);
                     self.status = message;
                 }
-                BackendEvent::OcrUnavailable { doc_id, message } if doc_id == self.doc_id => {
+                BackendEvent::OcrUnavailable { doc_id, message } if doc_id == 0 || doc_id == self.doc_id => {
                     self.ocr_available = false;
                     self.status = message;
                     self.ocr_queued.clear();
@@ -361,6 +768,18 @@ impl KvikkApp {
                 }
                 BackendEvent::Error { doc_id, message } if doc_id == 0 || doc_id == self.doc_id => {
                     self.status = message;
+                }
+                BackendEvent::Error { doc_id, message } => {
+                    if let Some(tab) = self
+                        .tabs
+                        .iter_mut()
+                        .chain(self.closed_tabs.iter_mut())
+                        .find(|tab| tab.doc_id == doc_id)
+                    {
+                        if let Some(state) = tab.state.as_mut() {
+                            state.status = message;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -559,16 +978,17 @@ impl KvikkApp {
         }
 
         if let Some(viewport) = viewport {
-            if mode.pages_per_view() > 1 {
-                // Multi-page modes represent a complete viewport group. Preserve the
-                // page the reader was on, but align the containing group to the top so
-                // 3×2 / 5×2 / 7×3 / 10×4 / 20×8 never open halfway through their own grid.
+            if mode.is_grid() {
+                // The column count for modes 4–8 depends on the new viewport layout,
+                // so preserve the actual reading page now and canonicalize it only
+                // after the new layout has been built. This prevents a mode switch
+                // from accidentally advancing to a neighboring page group.
                 let page = self
                     .capture_anchor(viewport, None)
                     .map(|anchor| anchor.page)
                     .unwrap_or(self.current_page);
                 self.pending_anchor = None;
-                self.pending_goto = Some(mode.canonical_page(page));
+                self.pending_goto = Some(page);
             } else {
                 self.pending_goto = None;
                 self.pending_anchor = self.capture_anchor(viewport, None);
@@ -613,14 +1033,23 @@ impl KvikkApp {
             return;
         }
         let page = page.min(count - 1);
-        let canonical = self.view_mode.canonical_page(page);
+
+        // When a layout change is pending, its group size may not exist yet
+        // (modes 4–8 calculate columns from the viewport), so defer canonicalization.
+        if self.layout_dirty {
+            self.current_page = page;
+            self.pending_goto = Some(page);
+            return;
+        }
+
+        let canonical = self.layout.canonical_page(page);
         if let Some(row) = self.layout.row_for_page(canonical) {
             self.scroll_y = row.y;
             self.current_page = canonical;
             self.pending_goto = None;
         } else {
-            self.current_page = canonical;
-            self.pending_goto = Some(canonical);
+            self.current_page = page;
+            self.pending_goto = Some(page);
             self.layout_dirty = true;
         }
     }
@@ -630,13 +1059,51 @@ impl KvikkApp {
         if count == 0 {
             return;
         }
-        let step = self.view_mode.pages_per_view();
-        let target = if backwards {
-            self.current_page.saturating_sub(step)
+
+        let current = self
+            .layout
+            .canonical_page_at_y(self.scroll_y + 1.0)
+            .min(count.saturating_sub(1));
+        let group_top = self
+            .layout
+            .row_for_page(current)
+            .map(|row| {
+                row.pages
+                    .iter()
+                    .map(|page| page.y)
+                    .reduce(f32::min)
+                    .unwrap_or(row.y)
+            })
+            .unwrap_or(0.0);
+
+        if backwards {
+            // Shift+Space first reveals the top of the current page/page group when
+            // it has scrolled out of view. Only a second press from the top moves to
+            // the previous page/group. This mirrors how readers naturally backtrack.
+            if self.scroll_y > group_top + 2.0 {
+                self.scroll_y = group_top;
+                self.current_page = current;
+                self.pending_goto = None;
+                return;
+            }
+            if self.view_mode == ViewMode::Overview {
+                return;
+            }
+            let step = self.layout.pages_per_group.max(1);
+            let target = current.saturating_sub(step);
+            if target < current {
+                self.goto_page(target);
+            }
         } else {
-            (self.current_page + step).min(count - 1)
-        };
-        self.goto_page(target);
+            if self.view_mode == ViewMode::Overview {
+                return;
+            }
+            let step = self.layout.pages_per_group.max(1);
+            let target = (current + step).min(count - 1);
+            if self.layout.canonical_page(target) != current {
+                self.goto_page(target);
+            }
+        }
     }
 
     fn speed_slower(&mut self) {
@@ -682,10 +1149,10 @@ impl KvikkApp {
         }
 
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
-        if let Some(path) = dropped
+        for path in dropped
             .into_iter()
             .map(|file| file.path().to_path_buf())
-            .find(|path| is_pdf(path))
+            .filter(|path| is_pdf(path))
         {
             self.open_path(path);
         }
@@ -705,6 +1172,53 @@ impl KvikkApp {
                 i.modifiers.command && i.key_pressed(Key::C),
             )
         });
+
+        if ctx.input(|i| {
+            i.modifiers.command
+                && i.modifiers.shift
+                && (i.key_pressed(Key::Tab) || i.key_pressed(Key::T))
+        }) {
+            self.reopen_closed_tab(ctx);
+            return;
+        }
+
+        if ctx.input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(Key::T)) {
+            self.new_tab(ctx);
+            return;
+        }
+
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(Key::W)) {
+            self.close_current_tab(ctx);
+            return;
+        }
+
+        let command_tab = ctx.input(|i| {
+            if !i.modifiers.command {
+                return None;
+            }
+            [
+                (Key::Num1, 1usize),
+                (Key::Num2, 2),
+                (Key::Num3, 3),
+                (Key::Num4, 4),
+                (Key::Num5, 5),
+                (Key::Num6, 6),
+                (Key::Num7, 7),
+                (Key::Num8, 8),
+                (Key::Num9, 9),
+            ]
+            .into_iter()
+            .find_map(|(key, number)| i.key_pressed(key).then_some(number))
+        });
+        if let Some(number) = command_tab {
+            self.switch_tab_shortcut(ctx, number);
+            return;
+        }
+
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(Key::O)) {
+            self.open_pdf_dialog();
+            return;
+        }
 
         if command_f {
             self.open_search();
@@ -761,16 +1275,17 @@ impl KvikkApp {
                             'j' => self.speed_slower(),
                             'l' => self.speed_faster(),
                             'f' => self.toggle_fullscreen(ctx),
-                            'o' => self.reset_zoom(viewport),
+                            'o' => self.open_pdf_dialog(),
+                            '0' => self.reset_zoom(viewport),
                             '1' => self.set_mode(ViewMode::FitWidth, viewport),
                             '2' => self.set_mode(ViewMode::FitHeight, viewport),
                             '3' => self.set_mode(ViewMode::Spread, viewport),
-                            '4' => self.set_mode(ViewMode::Grid3, viewport),
-                            '5' => self.set_mode(ViewMode::Grid6, viewport),
-                            '6' => self.set_mode(ViewMode::Grid10, viewport),
-                            '7' => self.set_mode(ViewMode::Grid21, viewport),
-                            '8' => self.set_mode(ViewMode::Grid40, viewport),
-                            '9' => self.set_mode(ViewMode::Grid160, viewport),
+                            '4' => self.set_mode(ViewMode::Rows2, viewport),
+                            '5' => self.set_mode(ViewMode::Rows3, viewport),
+                            '6' => self.set_mode(ViewMode::Rows4, viewport),
+                            '7' => self.set_mode(ViewMode::Rows5, viewport),
+                            '8' => self.set_mode(ViewMode::Rows7, viewport),
+                            '9' => self.set_mode(ViewMode::Overview, viewport),
                             '/' => self.open_search(),
                             '+' | '=' => {
                                 if let Some(viewport) = viewport {
@@ -836,10 +1351,19 @@ impl KvikkApp {
             || (self.last_viewport.y - viewport.height()).abs() > 0.5;
         if resized {
             if self.last_viewport != Vec2::ZERO && self.pending_anchor.is_none() {
-                self.pending_anchor = self.capture_anchor(
-                    Rect::from_min_size(viewport.min, self.last_viewport),
-                    None,
-                );
+                let old_viewport = Rect::from_min_size(viewport.min, self.last_viewport);
+                if self.view_mode.is_grid() {
+                    // Dynamic-column grids can change group size when the window width
+                    // changes. Preserve the reading page, then align the new containing
+                    // group after reflow instead of anchoring to an obsolete cell.
+                    let page = self
+                        .capture_anchor(old_viewport, None)
+                        .map(|anchor| anchor.page)
+                        .unwrap_or(self.current_page);
+                    self.pending_goto = Some(page);
+                } else {
+                    self.pending_anchor = self.capture_anchor(old_viewport, None);
+                }
                 // Resize storms behave like pinch zoom: reuse the current bitmap immediately
                 // and stop PDFium from finishing obsolete sizes until the window settles.
                 self.invalidate_render_requests(4);
@@ -861,19 +1385,27 @@ impl KvikkApp {
             if let Some(anchor) = self.pending_anchor.take() {
                 self.apply_anchor(anchor, viewport);
             } else if let Some(page) = self.pending_goto.take() {
-                if let Some(row) = self.layout.row_for_page(page) {
+                let canonical = self.layout.canonical_page(page);
+                if let Some(row) = self.layout.row_for_page(canonical) {
                     self.scroll_y = row.y;
-                    self.current_page = page;
+                    self.current_page = canonical;
                 }
             }
             self.clamp_scroll(viewport.size());
         }
     }
 
+    fn dense_grid(&self) -> bool {
+        self.view_mode == ViewMode::Overview || self.layout.pages_per_group >= 40
+    }
+
     fn desired_render_width(&self, displayed_width: f32, pixels_per_point: f32) -> u32 {
         let raw = (displayed_width * pixels_per_point * 1.08).ceil() as u32;
-        let quantized = ((raw + 63) / 64) * 64;
-        quantized.clamp(MIN_RENDER_WIDTH, MAX_RENDER_WIDTH)
+        let dense = self.dense_grid();
+        let quantum = if dense { 32 } else { 64 };
+        let quantized = ((raw + quantum - 1) / quantum) * quantum;
+        let minimum = if dense { 32 } else { MIN_RENDER_WIDTH };
+        quantized.clamp(minimum, MAX_RENDER_WIDTH)
     }
 
     fn best_bitmap_key(&self, page: usize, desired: u32) -> Option<(usize, u32)> {
@@ -902,12 +1434,17 @@ impl KvikkApp {
         {
             return;
         }
-        self.backend.high(BackendCommand::Render {
+        let command = BackendCommand::Render {
             doc_id: self.doc_id,
             page,
             pixel_width,
             generation: self.render_generation,
-        });
+        };
+        if self.dense_grid() {
+            self.backend.low(command);
+        } else {
+            self.backend.high(command);
+        }
     }
 
     fn texture_for(&mut self, ctx: &egui::Context, key: (usize, u32), inverted: bool) -> Option<TextureHandle> {
@@ -976,7 +1513,7 @@ impl KvikkApp {
             painter.text(
                 viewport.center(),
                 egui::Align2::CENTER_CENTER,
-                "Drop a PDF here\n\nO = 100% zoom · ? = commands",
+                "Drop a PDF here\n\nO = open PDF · 0 = 100% zoom · ? = commands",
                 egui::FontId::proportional(20.0),
                 Color32::from_gray(150),
             );
@@ -1011,7 +1548,7 @@ impl KvikkApp {
 
         self.current_page = self
             .layout
-            .canonical_page_at_y(self.scroll_y + 12.0, self.view_mode)
+            .canonical_page_at_y(self.scroll_y + 12.0)
             .min(self.page_count().saturating_sub(1));
 
         let preload = viewport.height() * 0.8;
@@ -1070,7 +1607,9 @@ impl KvikkApp {
                     );
                 }
 
-                self.queue_text(placed.page, false);
+                if !self.dense_grid() || self.search_open {
+                    self.queue_text(placed.page, false);
+                }
                 self.paint_selection(&painter, placed, screen_rect);
 
                 if self
@@ -1292,15 +1831,72 @@ impl KvikkApp {
         }
     }
 
+    fn tabs_bar(&mut self, ui: &mut egui::Ui) {
+        if self.tabs.is_empty() {
+            return;
+        }
+
+        let active = self.active_tab;
+        let mut clicked = None;
+        let mut create_new = false;
+        let mut reopen_closed = false;
+        egui::Panel::top("tabs")
+            .frame(
+                egui::Frame::new()
+                    .fill(Color32::from_gray(12))
+                    .inner_margin(egui::Margin::symmetric(6, 3)),
+            )
+            .show(ui, |ui| {
+                egui::ScrollArea::horizontal()
+                    .id_salt("pdf-tabs-scroll")
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            for (index, tab) in self.tabs.iter().enumerate() {
+                                let response = ui.selectable_label(
+                                    active == Some(index),
+                                    tab.title.as_str(),
+                                );
+                                let response = if let Some(path) = tab.path.as_ref() {
+                                    response.on_hover_text(path.display().to_string())
+                                } else {
+                                    response.on_hover_text("Empty tab")
+                                };
+                                if response.clicked() {
+                                    clicked = Some(index);
+                                }
+                            }
+                            if ui.small_button("+").on_hover_text("New tab (⌘T)").clicked() {
+                                create_new = true;
+                            }
+                            if !self.closed_tabs.is_empty()
+                                && ui
+                                    .small_button("↶")
+                                    .on_hover_text("Reopen closed tab (⌘⇧T)")
+                                    .clicked()
+                            {
+                                reopen_closed = true;
+                            }
+                        });
+                    });
+            });
+
+        let ctx = ui.ctx().clone();
+        if let Some(index) = clicked {
+            self.switch_tab(&ctx, index);
+        } else if create_new {
+            self.new_tab(&ctx);
+        } else if reopen_closed {
+            self.reopen_closed_tab(&ctx);
+        }
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui, viewport_hint: Option<Rect>) {
         egui::Panel::top("toolbar")
             .frame(egui::Frame::new().fill(Color32::from_gray(18)))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("Open PDF").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().add_filter("PDF", &["pdf"]).pick_file() {
-                            self.open_path(path);
-                        }
+                    if ui.button("O Open PDF").clicked() {
+                        self.open_pdf_dialog();
                     }
                     ui.separator();
                     if ui.button(if self.is_playing { "Pause" } else { "Play" }).clicked() {
@@ -1323,23 +1919,23 @@ impl KvikkApp {
                     if ui.selectable_label(self.view_mode == ViewMode::Spread, "3 2×1").clicked() {
                         self.set_mode(ViewMode::Spread, viewport_hint);
                     }
-                    if ui.selectable_label(self.view_mode == ViewMode::Grid3, "4 3×1").clicked() {
-                        self.set_mode(ViewMode::Grid3, viewport_hint);
+                    if ui.selectable_label(self.view_mode == ViewMode::Rows2, "4 2 rows").clicked() {
+                        self.set_mode(ViewMode::Rows2, viewport_hint);
                     }
-                    if ui.selectable_label(self.view_mode == ViewMode::Grid6, "5 3×2").clicked() {
-                        self.set_mode(ViewMode::Grid6, viewport_hint);
+                    if ui.selectable_label(self.view_mode == ViewMode::Rows3, "5 3 rows").clicked() {
+                        self.set_mode(ViewMode::Rows3, viewport_hint);
                     }
-                    if ui.selectable_label(self.view_mode == ViewMode::Grid10, "6 5×2").clicked() {
-                        self.set_mode(ViewMode::Grid10, viewport_hint);
+                    if ui.selectable_label(self.view_mode == ViewMode::Rows4, "6 4 rows").clicked() {
+                        self.set_mode(ViewMode::Rows4, viewport_hint);
                     }
-                    if ui.selectable_label(self.view_mode == ViewMode::Grid21, "7 7×3").clicked() {
-                        self.set_mode(ViewMode::Grid21, viewport_hint);
+                    if ui.selectable_label(self.view_mode == ViewMode::Rows5, "7 5 rows").clicked() {
+                        self.set_mode(ViewMode::Rows5, viewport_hint);
                     }
-                    if ui.selectable_label(self.view_mode == ViewMode::Grid40, "8 10×4").clicked() {
-                        self.set_mode(ViewMode::Grid40, viewport_hint);
+                    if ui.selectable_label(self.view_mode == ViewMode::Rows7, "8 7 rows").clicked() {
+                        self.set_mode(ViewMode::Rows7, viewport_hint);
                     }
-                    if ui.selectable_label(self.view_mode == ViewMode::Grid160, "9 20×8").clicked() {
-                        self.set_mode(ViewMode::Grid160, viewport_hint);
+                    if ui.selectable_label(self.view_mode == ViewMode::Overview, "9 Overview").clicked() {
+                        self.set_mode(ViewMode::Overview, viewport_hint);
                     }
                     if ui.button("−").clicked() {
                         if let Some(rect) = viewport_hint {
@@ -1352,7 +1948,7 @@ impl KvikkApp {
                             self.zoom_by(1.12, rect, None);
                         }
                     }
-                    if ui.button("O 100%").clicked() {
+                    if ui.button("0 100%").clicked() {
                         self.reset_zoom(viewport_hint);
                     }
                     ui.separator();
@@ -1367,18 +1963,6 @@ impl KvikkApp {
                     }
                     if ui.button("About").clicked() {
                         self.show_about = true;
-                    }
-                    ui.separator();
-                    let count = self.page_count();
-                    if count > 0 {
-                        let step = self.view_mode.pages_per_view();
-                        if step > 1 {
-                            let start = self.view_mode.canonical_page(self.current_page);
-                            let end = (start + step).min(count);
-                            ui.monospace(format!("Pages {}–{} / {}", start + 1, end, count));
-                        } else {
-                            ui.monospace(format!("Page {} / {}", self.current_page + 1, count));
-                        }
                     }
                     if !self.status.is_empty() {
                         ui.separator();
@@ -1511,10 +2095,9 @@ impl eframe::App for KvikkApp {
         if let Some(path) = self.startup_path.take() {
             self.open_path(path);
         }
-        if let Some(path) = crate::platform::take_open_paths()
+        for path in crate::platform::take_open_paths()
             .into_iter()
-            .rev()
-            .find(|path| is_pdf(path))
+            .filter(|path| is_pdf(path))
         {
             self.open_path(path);
         }
@@ -1529,6 +2112,7 @@ impl eframe::App for KvikkApp {
         self.handle_global_input(&ctx, viewport_hint);
 
         if self.show_menu {
+            self.tabs_bar(ui);
             self.toolbar(ui, viewport_hint);
         }
         if self.search_open {

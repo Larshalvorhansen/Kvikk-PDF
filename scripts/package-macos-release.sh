@@ -117,6 +117,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
   <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Lars Halvor. MIT License.</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
   <key>NSHighResolutionCapable</key><true/>
+  <key>LSSupportsOpeningDocumentsInPlace</key><true/>
   <key>CFBundleDocumentTypes</key><array><dict>
     <key>CFBundleTypeName</key><string>PDF document</string>
     <key>CFBundleTypeRole</key><string>Viewer</string>
@@ -141,6 +142,13 @@ DMG_STAGE="$BUILD_DIR/dmg-stage"
 rm -rf "$DMG_STAGE"
 mkdir -p "$DMG_STAGE"
 ditto "$APP" "$DMG_STAGE/kvikk pdf.app"
+# Always point at the real system Applications directory. Do not use ~/Applications
+# or any Home Manager-created directory with the same name.
+ln -sfn /Applications "$DMG_STAGE/Applications"
+if [[ "$(readlink "$DMG_STAGE/Applications")" != "/Applications" ]]; then
+  echo "DMG Applications shortcut does not resolve to /Applications" >&2
+  exit 1
+fi
 
 if command -v create-dmg >/dev/null 2>&1; then
   set +e
@@ -152,7 +160,7 @@ if command -v create-dmg >/dev/null 2>&1; then
     --icon-size 128 \
     --icon "kvikk pdf.app" 175 190 \
     --hide-extension "kvikk pdf.app" \
-    --app-drop-link 485 190 \
+    --icon "Applications" 485 190 \
     "$DMG_OUT" "$DMG_STAGE"
   DMG_STATUS=$?
   set -e
@@ -162,7 +170,6 @@ fi
 
 if [[ $DMG_STATUS -ne 0 || ! -f "$DMG_OUT" ]]; then
   rm -f "$DMG_OUT"
-  ln -sfn /Applications "$DMG_STAGE/Applications"
   hdiutil create -volname "kvikk pdf" -srcfolder "$DMG_STAGE" -ov -format UDZO "$DMG_OUT" >/dev/null
 fi
 

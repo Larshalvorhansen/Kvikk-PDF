@@ -1,10 +1,10 @@
 pub const SPEED_LEVELS: &[f32] = &[
-    0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 11.0, 14.0, 17.0,
-    20.0, 23.0, 27.0, 31.0, 41.0, 53.0, 67.0, 83.0, 91.0, 120.0, 150.0, 190.0,
-    230.0, 270.0, 320.0, 380.0, 450.0, 550.0,
+    0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 11.0, 14.0, 15.0,
+    17.0, 20.0, 23.0, 27.0, 31.0, 41.0, 53.0, 67.0, 83.0, 91.0, 120.0, 150.0,
+    190.0, 230.0, 270.0, 320.0, 380.0, 450.0, 550.0, 650.0, 800.0, 1000.0, 1250.0,
 ];
 
-pub const DEFAULT_SPEED: f32 = 67.0;
+pub const DEFAULT_SPEED: f32 = 15.0;
 pub const MIN_NATIVE_TEXT_CHARS: usize = 48;
 pub const BASE_PX_PER_POINT: f32 = 96.0 / 72.0;
 pub const PAGE_GAP: f32 = 4.0;
@@ -22,35 +22,39 @@ pub enum ViewMode {
     FitWidth,
     FitHeight,
     Spread,
-    Grid3,
-    Grid6,
-    Grid10,
-    Grid21,
-    Grid40,
-    Grid160,
+    Rows2,
+    Rows3,
+    Rows4,
+    Rows5,
+    Rows7,
+    Overview,
 }
 
 impl ViewMode {
-    pub fn grid_spec(self) -> Option<(usize, usize)> {
+    /// Modes 4–8 specify the number of page rows and let the layout choose
+    /// the column count from the current window shape and average page shape.
+    pub fn requested_grid_rows(self) -> Option<usize> {
         match self {
-            Self::Spread => Some((2, 1)),
-            Self::Grid3 => Some((3, 1)),
-            Self::Grid6 => Some((3, 2)),
-            Self::Grid10 => Some((5, 2)),
-            Self::Grid21 => Some((7, 3)),
-            Self::Grid40 => Some((10, 4)),
-            Self::Grid160 => Some((20, 8)),
+            Self::Rows2 => Some(2),
+            Self::Rows3 => Some(3),
+            Self::Rows4 => Some(4),
+            Self::Rows5 => Some(5),
+            Self::Rows7 => Some(7),
             _ => None,
         }
     }
 
-    pub fn pages_per_view(self) -> usize {
-        self.grid_spec().map(|(cols, rows)| cols * rows).unwrap_or(1)
-    }
-
-    pub fn canonical_page(self, page: usize) -> usize {
-        let step = self.pages_per_view();
-        if step > 1 { (page / step) * step } else { page }
+    pub fn is_grid(self) -> bool {
+        matches!(
+            self,
+            Self::Spread
+                | Self::Rows2
+                | Self::Rows3
+                | Self::Rows4
+                | Self::Rows5
+                | Self::Rows7
+                | Self::Overview
+        )
     }
 }
 
@@ -93,7 +97,6 @@ pub struct SelectionPoint {
     pub glyph: usize,
 }
 
-
 #[derive(Clone, Debug)]
 pub enum LinkTarget {
     Page(usize),
@@ -128,6 +131,10 @@ pub struct DocumentLayout {
     pub rows: Vec<LayoutRow>,
     pub content_width: f32,
     pub content_height: f32,
+    /// Number of pages in one Space/Shift+Space navigation group for the
+    /// current layout. This is calculated by layout.rs because modes 4–8
+    /// have a dynamic number of columns.
+    pub pages_per_group: usize,
 }
 
 impl DocumentLayout {
@@ -152,13 +159,18 @@ impl DocumentLayout {
             .find(|p| p.page == page)
     }
 
-    pub fn canonical_page_at_y(&self, y: f32, mode: ViewMode) -> usize {
+    pub fn canonical_page(&self, page: usize) -> usize {
+        let step = self.pages_per_group.max(1);
+        if step > 1 { (page / step) * step } else { page }
+    }
+
+    pub fn canonical_page_at_y(&self, y: f32) -> usize {
         if self.rows.is_empty() {
             return 0;
         }
         let idx = self.first_visible_row(y);
         let row = &self.rows[idx];
         let page = row.pages.first().map(|p| p.page).unwrap_or(0);
-        mode.canonical_page(page)
+        self.canonical_page(page)
     }
 }

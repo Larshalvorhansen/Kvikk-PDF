@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.6.2
+
+- Changed view modes `4`–`8` to fixed-row layouts with window-adaptive column counts: 2, 3, 4, 5, and 7 rows respectively. Mode `9` remains the dynamic whole-document overview.
+- Changed `Shift+Space` so it first returns to the top of the current page/page group when that top has scrolled out of view; only when already at the top does it move to the previous page/group.
+- Changed the new-tab shortcut from `⌘N` to `⌘T`.
+- Added `⌘⇧Tab` and `⌘⇧T` to reopen the most recently closed PDF tab, preserving its reading state.
+- Added 650, 800, 1000, and 1250 px/s pacer levels above the previous 550 px/s maximum.
+- Reduced render pressure in very dense page grids by using thumbnail-sized, lower-priority render requests.
+- Added an explicit packaging check that the DMG Applications item resolves to the real system `/Applications` directory.
+
+## 0.6.1
+
+- Added `⌘W` to close the current PDF tab and release its PDFium document.
+- Added `⌘N` to create a new empty tab; opening a PDF fills that tab, while normal PDF opens continue to create tabs automatically.
+- Replaced the fixed 160-page mode 9 with a dynamic whole-document overview. Kvikk chooses the row/column count from the PDF page count, page aspect ratio, and current window shape.
+- Changed the default pacer speed to exactly 15 px/s and added 15 px/s to the speed ladder.
+- Reduced overview rendering overhead by using smaller thumbnail render requests and avoiding unnecessary text extraction until search is active.
+- Changed the local macOS installer default from `~/Applications` to the real system `/Applications` directory.
+- Changed DMG packaging to include an explicit symlink to `/Applications`, so the drag target can never resolve to a Home Manager or per-user Applications directory.
+
+## 0.6.0
+
+- Fixed macOS Finder / **Open With** document handoff so Kvikk explicitly reports successful PDF opens instead of triggering Finder’s “could not be opened” warning.
+- Added multiple PDF tabs. Opening any PDF creates and selects a new tab; each tab keeps its view mode, zoom, scroll position, search state, inversion, and extracted text.
+- Added `⌘1`–`⌘8` tab switching and `⌘9` for the last tab.
+- Changed `O` to **Open PDF** and `0` to reset zoom to 100%.
+- Removed the page-count/status text shown at the right side of the main toolbar after a successful open.
+- Kept multiple PDFium documents resident while discarding inactive page textures, making tab switching responsive without retaining every rendered bitmap.
+- Added `LSSupportsOpeningDocumentsInPlace` to macOS bundles.
+
 ## 0.5.3
 
 - Fix macOS Apple Event handler declaration for the `objc2 0.5.x` `declare_class!` macro.

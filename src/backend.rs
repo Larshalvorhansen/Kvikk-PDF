@@ -6,6 +6,7 @@ use image::{DynamicImage, ImageFormat, RgbaImage};
 use leptess::LepTess;
 use pdfium_render::prelude::*;
 use std::{
+    collections::HashMap,
     env,
     io::Cursor,
     path::{Path, PathBuf},
@@ -19,6 +20,7 @@ use std::{
 #[derive(Debug)]
 pub enum BackendCommand {
     Open { doc_id: u64, path: PathBuf },
+    Close { doc_id: u64 },
     Render { doc_id: u64, page: usize, pixel_width: u32, generation: u64 },
     ExtractText { doc_id: u64, page: usize },
     Ocr { doc_id: u64, page: usize },
@@ -185,8 +187,9 @@ fn renderer_loop(
         }
     };
 
-    let mut document: Option<PdfDocument<'_>> = None;
-    let mut active_doc_id = 0u64;
+    // Keep each opened PDF resident in PDFium so tab switches do not have to
+    // parse the document again. Rendering is still demand-driven by the active tab.
+    let mut documents: HashMap<u64, PdfDocument<'_>> = HashMap::new();
 
     loop {
         let command = select_biased! {
@@ -196,12 +199,13 @@ fn renderer_loop(
 
         match command {
             BackendCommand::Shutdown => break,
+            BackendCommand::Close { doc_id } => {
+                documents.remove(&doc_id);
+            }
             BackendCommand::Open { doc_id, path } => {
-                document = None;
-                active_doc_id = doc_id;
                 match open_document(&pdfium, &path) {
                     Ok((doc, info)) => {
-                        document = Some(doc);
+                        documents.insert(doc_id, doc);
                         events.send(BackendEvent::Opened { doc_id, info });
                     }
                     Err(error) => {
@@ -213,10 +217,10 @@ fn renderer_loop(
                 }
             }
             BackendCommand::Render { doc_id, page, pixel_width, generation } => {
-                if doc_id != active_doc_id || generation != render_generation.load(Ordering::Relaxed) {
+                if generation != render_generation.load(Ordering::Relaxed) {
                     continue;
                 }
-                let Some(doc) = document.as_ref() else { continue };
+                let Some(doc) = documents.get(&doc_id) else { continue };
                 match render_page(doc, page, pixel_width) {
                     Ok((width, height, rgba)) => {
                         // A pinch/mode change may have happened while PDFium was rendering.
@@ -246,10 +250,7 @@ fn renderer_loop(
                 }
             }
             BackendCommand::ExtractText { doc_id, page } => {
-                if doc_id != active_doc_id {
-                    continue;
-                }
-                let Some(doc) = document.as_ref() else { continue };
+                let Some(doc) = documents.get(&doc_id) else { continue };
                 match extract_page_text(doc, page) {
                     Ok(data) => {
                         events.send(BackendEvent::TextReady { doc_id, data });
@@ -263,10 +264,7 @@ fn renderer_loop(
                 }
             }
             BackendCommand::Ocr { doc_id, page } => {
-                if doc_id != active_doc_id {
-                    continue;
-                }
-                let Some(doc) = document.as_ref() else { continue };
+                let Some(doc) = documents.get(&doc_id) else { continue };
                 match render_ocr_png(doc, page) {
                     Ok(png) => {
                         let _ = ocr_tx.send(OcrJob { doc_id, page, png });
@@ -280,10 +278,7 @@ fn renderer_loop(
                 }
             }
             BackendCommand::ResolveLink { doc_id, page, x_pt, y_pt } => {
-                if doc_id != active_doc_id {
-                    continue;
-                }
-                let Some(doc) = document.as_ref() else { continue };
+                let Some(doc) = documents.get(&doc_id) else { continue };
                 match resolve_link(doc, page, x_pt, y_pt) {
                     Ok(Some(target)) => events.send(BackendEvent::LinkResolved { doc_id, target }),
                     Ok(None) => {}
@@ -294,10 +289,7 @@ fn renderer_loop(
                 }
             }
             BackendCommand::ProbeLink { doc_id, probe_id, page, x_pt, y_pt } => {
-                if doc_id != active_doc_id {
-                    continue;
-                }
-                let Some(doc) = document.as_ref() else { continue };
+                let Some(doc) = documents.get(&doc_id) else { continue };
                 match resolve_link(doc, page, x_pt, y_pt) {
                     Ok(target) => events.send(BackendEvent::LinkProbed { doc_id, probe_id, target }),
                     Err(_) => events.send(BackendEvent::LinkProbed { doc_id, probe_id, target: None }),

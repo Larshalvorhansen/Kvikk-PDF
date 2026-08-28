@@ -18,13 +18,38 @@ pub fn build_layout(
     let mut rows = Vec::with_capacity(pages.len());
     let mut y = PAGE_MARGIN;
     let mut content_width = viewport_width;
+    let mut pages_per_group = 1usize;
 
-    if let Some((cols, grid_rows)) = mode.grid_spec() {
-        let grid_usable_w = (viewport_width - GRID_MARGIN * 2.0).max(64.0);
-        let grid_usable_h = (viewport_height - GRID_MARGIN * 2.0).max(64.0);
-        let cell_w = ((grid_usable_w - GRID_GAP * cols.saturating_sub(1) as f32) / cols as f32).max(24.0);
-        let cell_h = ((grid_usable_h - GRID_GAP * grid_rows.saturating_sub(1) as f32) / grid_rows as f32).max(24.0);
-        let pages_per_group = cols * grid_rows;
+    let grid_spec = match mode {
+        ViewMode::Spread => Some((2, 1)),
+        ViewMode::Overview => Some(overview_grid_spec(pages, viewport_width, viewport_height)),
+        _ => mode.requested_grid_rows().map(|requested_rows| {
+            (
+                columns_for_fixed_rows(pages, requested_rows, viewport_width, viewport_height),
+                requested_rows,
+            )
+        }),
+    };
+
+    if let Some((cols, grid_rows)) = grid_spec {
+        let cols = cols.max(1);
+        let grid_rows = grid_rows.max(1);
+        let grid_usable_w = (viewport_width - GRID_MARGIN * 2.0).max(16.0);
+        let grid_usable_h = (viewport_height - GRID_MARGIN * 2.0).max(16.0);
+        let min_cell = if mode == ViewMode::Overview { 2.0 } else { 16.0 };
+        let cell_w = ((grid_usable_w - GRID_GAP * cols.saturating_sub(1) as f32) / cols as f32)
+            .max(min_cell);
+        let cell_h = ((grid_usable_h - GRID_GAP * grid_rows.saturating_sub(1) as f32)
+            / grid_rows as f32)
+            .max(min_cell);
+        content_width = content_width.max(
+            GRID_MARGIN * 2.0 + cols as f32 * cell_w + cols.saturating_sub(1) as f32 * GRID_GAP,
+        );
+        pages_per_group = if mode == ViewMode::Overview {
+            pages.len().max(1)
+        } else {
+            cols * grid_rows
+        };
         let mut group_start = 0usize;
         y = GRID_MARGIN;
 
@@ -41,9 +66,7 @@ pub fn build_layout(
 
                     let raw_w = metric.width_pt * BASE_PX_PER_POINT;
                     let raw_h = metric.height_pt * BASE_PX_PER_POINT;
-                    let scale = (cell_w / raw_w)
-                        .min(cell_h / raw_h)
-                        .clamp(0.02, 5.0);
+                    let scale = (cell_w / raw_w).min(cell_h / raw_h).clamp(0.001, 5.0);
                     let w = raw_w * scale;
                     let h = raw_h * scale;
                     let cell_x = GRID_MARGIN + col_index as f32 * (cell_w + GRID_GAP);
@@ -69,9 +92,9 @@ pub fn build_layout(
                 }
             }
 
-            // Every multi-page group occupies exactly one viewport worth of document
-            // height. This makes Space/Shift+Space land on stable 2/3/6/10/21/40/160-page
-            // boundaries instead of depending on individual page aspect ratios.
+            // Each multi-page group occupies one viewport. Modes 4–8 choose
+            // their column count dynamically but retain the requested row count.
+            // Overview puts the entire document in one dynamically chosen grid.
             y += viewport_height;
             group_start += pages_per_group;
         }
@@ -100,7 +123,7 @@ pub fn build_layout(
         }
     }
 
-    let trailing_margin = if mode.grid_spec().is_some() { GRID_MARGIN } else { PAGE_MARGIN };
+    let trailing_margin = if mode.is_grid() { GRID_MARGIN } else { PAGE_MARGIN };
     let content_height = rows
         .last()
         .map(|row| row.y + row.h + trailing_margin)
@@ -110,5 +133,107 @@ pub fn build_layout(
         rows,
         content_width,
         content_height,
+        pages_per_group,
+    }
+}
+
+fn average_page_ratio(pages: &[PageMetric]) -> f32 {
+    if pages.is_empty() {
+        return 0.707;
+    }
+    let sum: f32 = pages
+        .iter()
+        .map(|page| (page.width_pt / page.height_pt.max(1.0)).clamp(0.1, 10.0))
+        .sum();
+    (sum / pages.len() as f32).clamp(0.1, 10.0)
+}
+
+/// Given a requested number of rows, choose enough columns to use the current
+/// window width naturally. A portrait PDF on a wide window therefore gets more
+/// columns than the same mode on a narrow window, while the row count stays fixed.
+fn columns_for_fixed_rows(
+    pages: &[PageMetric],
+    requested_rows: usize,
+    viewport_width: f32,
+    viewport_height: f32,
+) -> usize {
+    let rows = requested_rows.max(1);
+    let count = pages.len().max(1);
+    let usable_w = (viewport_width - GRID_MARGIN * 2.0).max(16.0);
+    let usable_h = (viewport_height - GRID_MARGIN * 2.0).max(16.0);
+    let cell_h = ((usable_h - GRID_GAP * rows.saturating_sub(1) as f32) / rows as f32).max(1.0);
+    let ideal_page_w = cell_h * average_page_ratio(pages);
+    let columns_from_window = ((usable_w + GRID_GAP) / (ideal_page_w + GRID_GAP))
+        .round()
+        .max(1.0) as usize;
+
+    // There is no value in allocating columns that can never contain a page in
+    // this document. This also makes small PDFs use the viewport more generously.
+    columns_from_window.min(count.div_ceil(rows).max(1)).max(1)
+}
+
+/// Choose a grid that fits the entire document into one viewport while maximizing
+/// the approximate displayed page area. This naturally yields layouts such as 5×2
+/// for ten portrait pages and roughly 24–26 columns for a ~300 page document,
+/// depending on the window shape and the PDF's page aspect ratio.
+fn overview_grid_spec(pages: &[PageMetric], viewport_width: f32, viewport_height: f32) -> (usize, usize) {
+    let count = pages.len().max(1);
+    if count == 1 {
+        return (1, 1);
+    }
+
+    let average_ratio = average_page_ratio(pages);
+    let usable_w = (viewport_width - GRID_MARGIN * 2.0).max(16.0);
+    let usable_h = (viewport_height - GRID_MARGIN * 2.0).max(16.0);
+    let mut best = (1usize, count);
+    let mut best_score = -1.0f32;
+
+    for cols in 1..=count {
+        let rows = count.div_ceil(cols);
+        let cell_w = ((usable_w - GRID_GAP * cols.saturating_sub(1) as f32) / cols as f32).max(0.1);
+        let cell_h = ((usable_h - GRID_GAP * rows.saturating_sub(1) as f32) / rows as f32).max(0.1);
+
+        // Representative page has height 1 and width average_ratio. Maximizing its
+        // rendered area also balances the row/column count against the viewport shape.
+        let scale = (cell_w / average_ratio).min(cell_h);
+        let page_area = average_ratio * scale * scale;
+        let occupancy = count as f32 / (cols * rows) as f32;
+        let score = page_area * occupancy;
+
+        if score > best_score {
+            best_score = score;
+            best = (cols, rows);
+        }
+    }
+
+    best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{columns_for_fixed_rows, overview_grid_spec};
+    use crate::model::PageMetric;
+
+    fn portrait_pages(count: usize) -> Vec<PageMetric> {
+        vec![PageMetric { width_pt: 595.0, height_pt: 842.0 }; count]
+    }
+
+    #[test]
+    fn two_row_mode_chooses_columns_from_window_shape() {
+        let cols = columns_for_fixed_rows(&portrait_pages(100), 2, 1600.0, 1000.0);
+        assert!((4..=6).contains(&cols));
+    }
+
+    #[test]
+    fn overview_uses_five_by_two_for_ten_portrait_pages_on_a_wide_window() {
+        assert_eq!(overview_grid_spec(&portrait_pages(10), 1600.0, 1000.0), (5, 2));
+    }
+
+    #[test]
+    fn overview_keeps_three_hundred_pages_close_to_one_screen() {
+        let (cols, rows) = overview_grid_spec(&portrait_pages(300), 1600.0, 1000.0);
+        assert!(cols * rows >= 300);
+        assert!(rows <= 14);
+        assert!(cols >= 22);
     }
 }
