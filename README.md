@@ -4,7 +4,7 @@
 
 # Kvikk PDF
 
-Designed for rapid PDF navigation and flexible view customization. The goal is to make both deep reading and quickly skimming PDFs as fast and frictionless as possible.
+Meaning rapid in Norwegian, Kvikk is designed for rapid PDF navigation and flexible view customization. The goal is to make both deep reading and quickly skimming PDFs as fast and frictionless as possible.
 
 Written in Rust in dialogue with an LLM.
 
