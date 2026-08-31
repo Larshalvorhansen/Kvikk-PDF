@@ -1,4 +1,4 @@
-use crate::model::{DocumentInfo, Glyph, LinkTarget, PageMetric, PageTextData, PdfBounds};
+use crate::model::{DocumentInfo, Glyph, LinkTarget, PageCrop, PageMetric, PageTextData, PdfBounds};
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{select_biased, unbounded, Receiver, Sender};
 use eframe::egui;
@@ -24,6 +24,7 @@ pub enum BackendCommand {
     Render { doc_id: u64, page: usize, pixel_width: u32, generation: u64 },
     ExtractText { doc_id: u64, page: usize },
     Ocr { doc_id: u64, page: usize },
+    AnalyzeCrop { doc_id: u64, page: usize },
     ResolveLink { doc_id: u64, page: usize, x_pt: f32, y_pt: f32 },
     ProbeLink { doc_id: u64, probe_id: u64, page: usize, x_pt: f32, y_pt: f32 },
     Shutdown,
@@ -52,6 +53,7 @@ pub enum BackendEvent {
     OcrReady { doc_id: u64, page: usize, text: String },
     OcrFailed { doc_id: u64, page: usize, message: String },
     OcrUnavailable { doc_id: u64, message: String },
+    CropReady { doc_id: u64, page: usize, crop: PageCrop },
     LinkResolved { doc_id: u64, target: LinkTarget },
     LinkProbed { doc_id: u64, probe_id: u64, target: Option<LinkTarget> },
     Error { doc_id: u64, message: String },
@@ -277,6 +279,16 @@ fn renderer_loop(
                     }
                 }
             }
+            BackendCommand::AnalyzeCrop { doc_id, page } => {
+                let Some(doc) = documents.get(&doc_id) else { continue };
+                match analyze_page_crop(doc, page) {
+                    Ok(crop) => events.send(BackendEvent::CropReady { doc_id, page, crop }),
+                    Err(error) => events.send(BackendEvent::Error {
+                        doc_id,
+                        message: format!("Page {} crop analysis failed: {error}", page + 1),
+                    }),
+                }
+            }
             BackendCommand::ResolveLink { doc_id, page, x_pt, y_pt } => {
                 let Some(doc) = documents.get(&doc_id) else { continue };
                 match resolve_link(doc, page, x_pt, y_pt) {
@@ -430,6 +442,113 @@ fn extract_page_text(document: &PdfDocument<'_>, page_index: usize) -> Result<Pa
         text,
         glyphs,
     })
+}
+
+
+fn analyze_page_crop(document: &PdfDocument<'_>, page: usize) -> Result<PageCrop> {
+    const ANALYSIS_WIDTH: u32 = 384;
+    let page = get_page(document, page)?;
+    let bitmap = page
+        .render_with_config(
+            &PdfRenderConfig::new()
+                .set_target_width(ANALYSIS_WIDTH as Pixels)
+                .set_maximum_height(1024 as Pixels)
+                .set_text_smoothing(true)
+                .set_path_smoothing(true)
+                .set_image_smoothing(true)
+                .use_lcd_text_rendering(false)
+                .render_annotations(true),
+        )
+        .context("PDFium crop-analysis render failed")?;
+
+    let width = bitmap.width().max(1) as usize;
+    let height = bitmap.height().max(1) as usize;
+    let rgba = bitmap.as_rgba_bytes();
+    Ok(detect_content_crop(&rgba, width, height))
+}
+
+fn detect_content_crop(rgba: &[u8], width: usize, height: usize) -> PageCrop {
+    if width < 4 || height < 4 || rgba.len() < width.saturating_mul(height).saturating_mul(4) {
+        return PageCrop::FULL;
+    }
+
+    // Estimate the page background from the four corners. Most PDFs are white, but
+    // comparing against their own corners also behaves sensibly for tinted/dark pages.
+    let corner = |x: usize, y: usize| -> [f32; 3] {
+        let i = (y * width + x) * 4;
+        [rgba[i] as f32, rgba[i + 1] as f32, rgba[i + 2] as f32]
+    };
+    let corners = [
+        corner(0, 0),
+        corner(width - 1, 0),
+        corner(0, height - 1),
+        corner(width - 1, height - 1),
+    ];
+    let median_channel = |channel: usize| {
+        let mut values = [
+            corners[0][channel],
+            corners[1][channel],
+            corners[2][channel],
+            corners[3][channel],
+        ];
+        values.sort_by(|a, b| a.total_cmp(b));
+        (values[1] + values[2]) * 0.5
+    };
+    let background = [median_channel(0), median_channel(1), median_channel(2)];
+
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0usize;
+    let mut max_y = 0usize;
+    let mut found = false;
+
+    for y in 0..height {
+        for x in 0..width {
+            let i = (y * width + x) * 4;
+            if rgba[i + 3] < 16 {
+                continue;
+            }
+            let dr = rgba[i] as f32 - background[0];
+            let dg = rgba[i + 1] as f32 - background[1];
+            let db = rgba[i + 2] as f32 - background[2];
+            let distance_sq = dr * dr + dg * dg + db * db;
+            // 18 RGB levels is enough to include anti-aliased text while ignoring
+            // renderer noise in otherwise empty margins.
+            if distance_sq > 18.0 * 18.0 {
+                found = true;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+
+    if !found {
+        return PageCrop::FULL;
+    }
+
+    // Keep a small visual breathing margin around detected content.
+    let pad_x = ((width as f32 * 0.018).round() as usize).max(3);
+    let pad_y = ((height as f32 * 0.018).round() as usize).max(3);
+    min_x = min_x.saturating_sub(pad_x);
+    min_y = min_y.saturating_sub(pad_y);
+    max_x = (max_x + pad_x).min(width - 1);
+    max_y = (max_y + pad_y).min(height - 1);
+
+    let crop = PageCrop {
+        left: min_x as f32 / width as f32,
+        top: min_y as f32 / height as f32,
+        right: (max_x + 1) as f32 / width as f32,
+        bottom: (max_y + 1) as f32 / height as f32,
+    };
+
+    // Tiny reductions are visually pointless and can make page geometry jitter.
+    if crop.width() > 0.96 && crop.height() > 0.96 {
+        PageCrop::FULL
+    } else {
+        crop
+    }
 }
 
 fn render_ocr_png(document: &PdfDocument<'_>, page: usize) -> Result<Vec<u8>> {

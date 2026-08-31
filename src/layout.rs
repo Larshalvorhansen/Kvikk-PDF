@@ -1,10 +1,12 @@
 use crate::model::{
-    DocumentLayout, LayoutRow, PageMetric, PlacedPage, ViewMode, BASE_PX_PER_POINT, GRID_GAP,
-    GRID_MARGIN, PAGE_GAP, PAGE_MARGIN,
+    DocumentLayout, LayoutRow, PageCrop, PageMetric, PlacedPage, ViewMode, BASE_PX_PER_POINT,
+    GRID_GAP, GRID_MARGIN, PAGE_GAP, PAGE_MARGIN,
 };
 
 pub fn build_layout(
     pages: &[PageMetric],
+    crops: &[Option<PageCrop>],
+    crop_enabled: bool,
     mode: ViewMode,
     manual_zoom: f32,
     viewport_width: f32,
@@ -25,7 +27,12 @@ pub fn build_layout(
         ViewMode::Overview => Some(overview_grid_spec(pages, viewport_width, viewport_height)),
         _ => mode.requested_grid_rows().map(|requested_rows| {
             (
-                columns_for_fixed_rows(pages, requested_rows, viewport_width, viewport_height),
+                columns_for_fixed_rows(
+                    pages,
+                    requested_rows,
+                    viewport_width,
+                    viewport_height,
+                ),
                 requested_rows,
             )
         }),
@@ -63,9 +70,9 @@ pub fn build_layout(
                 for col_index in 0..cols {
                     let page = group_start + row_index * cols + col_index;
                     let Some(metric) = pages.get(page).copied() else { break };
-
-                    let raw_w = metric.width_pt * BASE_PX_PER_POINT;
-                    let raw_h = metric.height_pt * BASE_PX_PER_POINT;
+                    let crop = crop_for_page(crops, crop_enabled, page);
+                    let raw_w = metric.width_pt * crop.width() * BASE_PX_PER_POINT;
+                    let raw_h = metric.height_pt * crop.height() * BASE_PX_PER_POINT;
                     let scale = (cell_w / raw_w).min(cell_h / raw_h).clamp(0.001, 5.0);
                     let w = raw_w * scale;
                     let h = raw_h * scale;
@@ -75,6 +82,7 @@ pub fn build_layout(
 
                     placed.push(PlacedPage {
                         page,
+                        crop,
                         x,
                         y: page_y,
                         w,
@@ -100,23 +108,26 @@ pub fn build_layout(
         }
     } else {
         for (page, metric) in pages.iter().copied().enumerate() {
+            let crop = crop_for_page(crops, crop_enabled, page);
+            let cropped_w_pt = metric.width_pt * crop.width();
+            let cropped_h_pt = metric.height_pt * crop.height();
             let scale = match mode {
                 ViewMode::Manual => manual_zoom.clamp(0.10, 20.0),
                 ViewMode::FitWidth => {
-                    (usable_w / (metric.width_pt * BASE_PX_PER_POINT)).clamp(0.02, 5.0)
+                    (usable_w / (cropped_w_pt * BASE_PX_PER_POINT)).clamp(0.02, 5.0)
                 }
                 ViewMode::FitHeight => {
-                    (usable_h / (metric.height_pt * BASE_PX_PER_POINT)).clamp(0.02, 5.0)
+                    (usable_h / (cropped_h_pt * BASE_PX_PER_POINT)).clamp(0.02, 5.0)
                 }
                 _ => unreachable!("grid modes handled above"),
             };
-            let w = metric.width_pt * BASE_PX_PER_POINT * scale;
-            let h = metric.height_pt * BASE_PX_PER_POINT * scale;
+            let w = cropped_w_pt * BASE_PX_PER_POINT * scale;
+            let h = cropped_h_pt * BASE_PX_PER_POINT * scale;
             let x = ((viewport_width - w) * 0.5).max(PAGE_MARGIN);
             rows.push(LayoutRow {
                 y,
                 h,
-                pages: vec![PlacedPage { page, x, y, w, h, scale }],
+                pages: vec![PlacedPage { page, crop, x, y, w, h, scale }],
             });
             content_width = content_width.max(x * 2.0 + w);
             y += h + PAGE_GAP;
@@ -137,6 +148,14 @@ pub fn build_layout(
     }
 }
 
+fn crop_for_page(crops: &[Option<PageCrop>], crop_enabled: bool, page: usize) -> PageCrop {
+    if crop_enabled {
+        crops.get(page).and_then(|crop| *crop).unwrap_or(PageCrop::FULL)
+    } else {
+        PageCrop::FULL
+    }
+}
+
 fn average_page_ratio(pages: &[PageMetric]) -> f32 {
     if pages.is_empty() {
         return 0.707;
@@ -149,8 +168,8 @@ fn average_page_ratio(pages: &[PageMetric]) -> f32 {
 }
 
 /// Given a requested number of rows, choose enough columns to use the current
-/// window width naturally. A portrait PDF on a wide window therefore gets more
-/// columns than the same mode on a narrow window, while the row count stays fixed.
+/// window width naturally. This deliberately uses the PDF's original page boxes
+/// rather than asynchronous crop results, so turning crop on cannot reshuffle groups.
 fn columns_for_fixed_rows(
     pages: &[PageMetric],
     requested_rows: usize,
@@ -167,15 +186,12 @@ fn columns_for_fixed_rows(
         .round()
         .max(1.0) as usize;
 
-    // There is no value in allocating columns that can never contain a page in
-    // this document. This also makes small PDFs use the viewport more generously.
     columns_from_window.min(count.div_ceil(rows).max(1)).max(1)
 }
 
 /// Choose a grid that fits the entire document into one viewport while maximizing
-/// the approximate displayed page area. This naturally yields layouts such as 5×2
-/// for ten portrait pages and roughly 24–26 columns for a ~300 page document,
-/// depending on the window shape and the PDF's page aspect ratio.
+/// the approximate displayed page area. Crop results do not alter this grid, which
+/// keeps mode 9 stable while crop analysis arrives in the background.
 fn overview_grid_spec(pages: &[PageMetric], viewport_width: f32, viewport_height: f32) -> (usize, usize) {
     let count = pages.len().max(1);
     if count == 1 {
@@ -192,9 +208,6 @@ fn overview_grid_spec(pages: &[PageMetric], viewport_width: f32, viewport_height
         let rows = count.div_ceil(cols);
         let cell_w = ((usable_w - GRID_GAP * cols.saturating_sub(1) as f32) / cols as f32).max(0.1);
         let cell_h = ((usable_h - GRID_GAP * rows.saturating_sub(1) as f32) / rows as f32).max(0.1);
-
-        // Representative page has height 1 and width average_ratio. Maximizing its
-        // rendered area also balances the row/column count against the viewport shape.
         let scale = (cell_w / average_ratio).min(cell_h);
         let page_area = average_ratio * scale * scale;
         let occupancy = count as f32 / (cols * rows) as f32;
@@ -220,18 +233,21 @@ mod tests {
 
     #[test]
     fn two_row_mode_chooses_columns_from_window_shape() {
-        let cols = columns_for_fixed_rows(&portrait_pages(100), 2, 1600.0, 1000.0);
+        let pages = portrait_pages(100);
+        let cols = columns_for_fixed_rows(&pages, 2, 1600.0, 1000.0);
         assert!((4..=6).contains(&cols));
     }
 
     #[test]
     fn overview_uses_five_by_two_for_ten_portrait_pages_on_a_wide_window() {
-        assert_eq!(overview_grid_spec(&portrait_pages(10), 1600.0, 1000.0), (5, 2));
+        let pages = portrait_pages(10);
+        assert_eq!(overview_grid_spec(&pages, 1600.0, 1000.0), (5, 2));
     }
 
     #[test]
     fn overview_keeps_three_hundred_pages_close_to_one_screen() {
-        let (cols, rows) = overview_grid_spec(&portrait_pages(300), 1600.0, 1000.0);
+        let pages = portrait_pages(300);
+        let (cols, rows) = overview_grid_spec(&pages, 1600.0, 1000.0);
         assert!(cols * rows >= 300);
         assert!(rows <= 14);
         assert!(cols >= 22);

@@ -17,9 +17,7 @@ It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract 
 - Click PDF links directly. Internal links jump to their destination; web and mail links open in the system app.
 - Link hover uses a hand cursor and shows the destination before you click.
 - Black fullscreen reading mode and PDF inversion.
-- One-key visual margin cropping for PDFs with oversized blank page edges.
-- Two pacer modes: continuous pixel scrolling or timed automatic page/page-group turning.
-- Time-based pacing with fine-grained speeds and a 15 px/s default.
+- Time-based auto-scroll pacer with fine-grained speeds and a 15 px/s default.
 - Pinch zoom and manual zoom up to 2000%.
 - Single-page and multi-page layouts, plus a dynamic whole-document overview.
 - Multiple PDF tabs with preserved reading position, keyboard switching, new-tab, and close-tab shortcuts.
@@ -35,9 +33,7 @@ It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract 
 | Hold `?` | Show keyboard commands |
 | `S` | Show / hide toolbar |
 | `I` | Invert PDF |
-| `⌘K` | Toggle automatic cropping of empty page margins |
-| `P` | Toggle continuous scroll / timed page-turn pacer |
-| `K` | Play / pause the active pacer |
+| `P` or `K` | Play / pause pacer |
 | `J` | Slower pacer |
 | `L` | Faster pacer |
 | `Space` | Next page / page group |
@@ -66,21 +62,6 @@ It is written in Rust and built around PDFium, egui/eframe, wgpu, and Tesseract 
 Modes `4`–`8` keep a fixed row count but calculate their column count from the current window shape and the PDF’s average page aspect ratio. Resizing the window therefore changes how many pages fit in each navigation group without changing the requested number of rows. Mode `9` remains a fully dynamic whole-document overview. For example, a ten-page portrait PDF will typically use a compact layout such as 5×2, while a roughly 300-page PDF may use around 24–26 columns depending on the window aspect ratio.
 
 On macOS, `⌘Tab`/`⌘⇧Tab` are normally reserved by the operating system for application switching, so Kvikk also supports the conventional `⌘⇧T` shortcut for reopening the most recently closed tab.
-
-
-### Crop margins
-
-Press `⌘K` to toggle visual margin cropping. Kvikk analyzes each page as it approaches the viewport, finds the non-empty content bounds, and removes oversized blank printer margins from the displayed layout. The PDF itself is never modified. Cropping is cached per page and remains compatible with text selection and PDF links.
-
-### Timed page-turn pacer
-
-The default pacer is continuous scrolling. Press `P` to toggle **page-turn mode**. In this mode, Kvikk waits for a configurable interval and then advances one page or one complete page group, depending on the active view mode.
-
-- `K` plays or pauses.
-- `J` makes page turns slower (more time per page).
-- `L` makes page turns faster (less time per page).
-- The default speed level corresponds to roughly **60 seconds per page**.
-- A countdown bar in the lower-right corner shows the remaining time before the next page turn.
 
 ## About
 
@@ -158,16 +139,16 @@ Every tag matching `v*` builds release archives for macOS and Windows and attach
 For example:
 
 ```sh
-git tag v0.6.3
-git push origin v0.6.3
+git tag v0.6.2
+git push origin v0.6.2
 ```
 
 The workflow creates artifacts similar to:
 
 ```text
-kvikk-pdf-0.6.3-macos-arm64.dmg
-kvikk-pdf-0.6.3-macos-arm64.zip
-kvikk-pdf-0.6.3-windows-x64.zip
+kvikk-pdf-0.6.2-macos-arm64.dmg
+kvikk-pdf-0.6.2-macos-arm64.zip
+kvikk-pdf-0.6.2-windows-x64.zip
 ```
 
 The macOS DMG uses the standard drag-to-Applications layout.
@@ -199,8 +180,8 @@ gh repo create kvikk-pdf --public --source=. --remote=origin --push
 Then create the first downloadable release:
 
 ```sh
-git tag v0.6.3
-git push origin v0.6.3
+git tag v0.6.2
+git push origin v0.6.2
 ```
 
 GitHub Actions will do the delightfully repetitive packaging work from there.

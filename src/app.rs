@@ -2,9 +2,10 @@ use crate::{
     backend::{BackendCommand, BackendEvent, PdfBackend},
     layout::build_layout,
     model::{
-        DocumentInfo, DocumentLayout, LinkTarget, PageTextData, PdfBounds, PlacedPage, SearchHit,
-        SelectionPoint, ViewMode, BITMAP_CACHE_BUDGET, DEFAULT_SPEED, MAX_MANUAL_ZOOM,
-        MAX_RENDER_WIDTH, MIN_NATIVE_TEXT_CHARS, MIN_RENDER_WIDTH, SPEED_LEVELS,
+        DocumentInfo, DocumentLayout, LinkTarget, PageCrop, PageTextData, PdfBounds, PlacedPage,
+        SearchHit, SelectionPoint, ViewMode, BITMAP_CACHE_BUDGET, DEFAULT_SPEED,
+        MAX_MANUAL_ZOOM, MAX_RENDER_WIDTH, MIN_NATIVE_TEXT_CHARS, MIN_RENDER_WIDTH,
+        PAGE_TURN_MAX_SECONDS, PAGE_TURN_MIN_SECONDS, PAGE_TURN_REFERENCE_DISTANCE, SPEED_LEVELS,
     },
 };
 use eframe::egui::{self, Color32, ColorImage, Key, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
@@ -21,7 +22,9 @@ const COMMANDS: &[(&str, &str)] = &[
     ("Hold ?", "Show this command list"),
     ("S", "Show / hide menu"),
     ("I", "Invert PDF"),
-    ("P / K", "Play / pause pacer"),
+    ("⌘K", "Crop / restore empty page margins"),
+    ("P", "Toggle continuous scroll / timed page turns"),
+    ("K", "Play / pause pacer"),
     ("J", "Slower pacer"),
     ("L", "Faster pacer"),
     ("Space", "Next page / page group"),
@@ -48,6 +51,12 @@ const COMMANDS: &[(&str, &str)] = &[
     ("F", "Toggle fullscreen"),
     ("Ctrl/⌘ C", "Copy selected PDF text"),
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PacerMode {
+    Continuous,
+    PageTurn,
+}
 
 #[derive(Clone, Copy)]
 struct ScrollAnchor {
@@ -84,6 +93,8 @@ struct TabState {
     view_mode: ViewMode,
     manual_zoom: f32,
     invert: bool,
+    crop_enabled: bool,
+    crops: Vec<Option<PageCrop>>,
     scroll_x: f32,
     scroll_y: f32,
     layout: DocumentLayout,
@@ -126,7 +137,12 @@ pub struct KvikkApp {
     fullscreen: bool,
     show_menu: bool,
     is_playing: bool,
+    pacer_mode: PacerMode,
+    page_turn_elapsed: f32,
     speed_index: usize,
+    crop_enabled: bool,
+    crops: Vec<Option<PageCrop>>,
+    crop_requested: HashSet<usize>,
     scroll_x: f32,
     scroll_y: f32,
     layout: DocumentLayout,
@@ -219,7 +235,12 @@ impl KvikkApp {
             fullscreen: false,
             show_menu: true,
             is_playing: false,
+            pacer_mode: PacerMode::Continuous,
+            page_turn_elapsed: 0.0,
             speed_index,
+            crop_enabled: false,
+            crops: Vec::new(),
+            crop_requested: HashSet::new(),
             scroll_x: 0.0,
             scroll_y: 0.0,
             layout: DocumentLayout::default(),
@@ -273,6 +294,11 @@ impl KvikkApp {
         SPEED_LEVELS[self.speed_index]
     }
 
+    fn page_turn_seconds(&self) -> f32 {
+        (PAGE_TURN_REFERENCE_DISTANCE / self.speed().max(0.1))
+            .clamp(PAGE_TURN_MIN_SECONDS, PAGE_TURN_MAX_SECONDS)
+    }
+
     fn invalidate_render_requests(&mut self, debounce_frames: u8) {
         self.render_generation = self.backend.bump_render_generation();
         self.render_in_flight.clear();
@@ -305,6 +331,7 @@ impl KvikkApp {
         self.bitmaps.clear();
         self.render_in_flight.clear();
         self.render_failed.clear();
+        self.crop_requested.clear();
         self.text_requested.clear();
         self.ocr_queued.clear();
         self.ocr_queued_set.clear();
@@ -321,6 +348,8 @@ impl KvikkApp {
             view_mode: self.view_mode,
             manual_zoom: self.manual_zoom,
             invert: self.invert,
+            crop_enabled: self.crop_enabled,
+            crops: std::mem::take(&mut self.crops),
             scroll_x: self.scroll_x,
             scroll_y: self.scroll_y,
             layout: std::mem::take(&mut self.layout),
@@ -356,6 +385,9 @@ impl KvikkApp {
         self.view_mode = state.view_mode;
         self.manual_zoom = state.manual_zoom;
         self.invert = state.invert;
+        self.crop_enabled = state.crop_enabled;
+        self.crops = state.crops;
+        self.crop_requested.clear();
         self.scroll_x = state.scroll_x;
         self.scroll_y = state.scroll_y;
         self.layout = state.layout;
@@ -390,6 +422,7 @@ impl KvikkApp {
         self.link_probe_signature = None;
         self.hover_link_target = None;
         self.is_playing = false;
+        self.page_turn_elapsed = 0.0;
         self.render_generation = self.backend.bump_render_generation();
         self.render_debounce_frames = 0;
     }
@@ -401,6 +434,9 @@ impl KvikkApp {
         self.bitmaps.clear();
         self.render_in_flight.clear();
         self.render_failed.clear();
+        self.crop_enabled = false;
+        self.crops.clear();
+        self.crop_requested.clear();
         self.native_text.clear();
         self.search_text.clear();
         self.text_requested.clear();
@@ -428,6 +464,7 @@ impl KvikkApp {
         self.scroll_y = 0.0;
         self.current_page = 0;
         self.is_playing = false;
+        self.page_turn_elapsed = 0.0;
         self.view_mode = ViewMode::FitWidth;
         self.manual_zoom = 1.0;
         self.layout = DocumentLayout::default();
@@ -446,6 +483,9 @@ impl KvikkApp {
         self.bitmaps.clear();
         self.render_in_flight.clear();
         self.render_failed.clear();
+        self.crop_enabled = false;
+        self.crops.clear();
+        self.crop_requested.clear();
         self.native_text.clear();
         self.search_text.clear();
         self.text_requested.clear();
@@ -473,6 +513,7 @@ impl KvikkApp {
         self.scroll_y = 0.0;
         self.current_page = 0;
         self.is_playing = false;
+        self.page_turn_elapsed = 0.0;
         self.view_mode = ViewMode::FitWidth;
         self.manual_zoom = 1.0;
         self.layout = DocumentLayout::default();
@@ -662,6 +703,8 @@ impl KvikkApp {
                         }
                         self.native_text = vec![None; count];
                         self.search_text = vec![None; count];
+                        self.crops = vec![None; count];
+                        self.crop_requested.clear();
                         self.current_page = 0;
                         self.scroll_x = 0.0;
                         self.scroll_y = 0.0;
@@ -679,6 +722,7 @@ impl KvikkApp {
                         if let Some(state) = tab.state.as_mut() {
                             state.native_text = vec![None; count];
                             state.search_text = vec![None; count];
+                            state.crops = vec![None; count];
                             state.current_page = 0;
                             state.scroll_x = 0.0;
                             state.scroll_y = 0.0;
@@ -757,6 +801,42 @@ impl KvikkApp {
                     self.ocr_queued_set.clear();
                     self.ocr_in_flight.clear();
                 }
+                BackendEvent::CropReady { doc_id, page, crop } if doc_id == self.doc_id => {
+                    self.crop_requested.remove(&page);
+                    if page < self.crops.len() && self.crops[page] != Some(crop) {
+                        if self.crop_enabled && self.last_viewport != Vec2::ZERO {
+                            let viewport = Rect::from_min_size(Pos2::ZERO, self.last_viewport);
+                            if self.view_mode.is_grid() {
+                                self.pending_goto = Some(self.current_page);
+                            } else if self.pending_anchor.is_none() {
+                                self.pending_anchor = self.capture_anchor(viewport, None);
+                            }
+                        }
+                        self.crops[page] = Some(crop);
+                        if self.crop_enabled {
+                            self.layout_dirty = true;
+                        }
+                        ctx.request_repaint();
+                    }
+                }
+                BackendEvent::CropReady { doc_id, page, crop } => {
+                    if let Some(tab) = self
+                        .tabs
+                        .iter_mut()
+                        .chain(self.closed_tabs.iter_mut())
+                        .find(|tab| tab.doc_id == doc_id)
+                    {
+                        if let Some(state) = tab.state.as_mut() {
+                            if page < state.crops.len() {
+                                state.crops[page] = Some(crop);
+                                if state.crop_enabled {
+                                    state.pending_goto = Some(state.current_page);
+                                    state.layout_dirty = true;
+                                }
+                            }
+                        }
+                    }
+                }
                 BackendEvent::LinkResolved { doc_id, target } if doc_id == self.doc_id => {
                     self.follow_link_target(ctx, target);
                 }
@@ -810,6 +890,22 @@ impl KvikkApp {
             return;
         }
         let cmd = BackendCommand::ExtractText { doc_id: self.doc_id, page };
+        if high_priority {
+            self.backend.high(cmd);
+        } else {
+            self.backend.low(cmd);
+        }
+    }
+
+    fn queue_crop(&mut self, page: usize, high_priority: bool) {
+        if !self.crop_enabled
+            || page >= self.page_count()
+            || self.crops.get(page).and_then(|crop| *crop).is_some()
+            || !self.crop_requested.insert(page)
+        {
+            return;
+        }
+        let cmd = BackendCommand::AnalyzeCrop { doc_id: self.doc_id, page };
         if high_priority {
             self.backend.high(cmd);
         } else {
@@ -976,6 +1072,7 @@ impl KvikkApp {
         if self.view_mode == mode {
             return;
         }
+        self.page_turn_elapsed = 0.0;
 
         if let Some(viewport) = viewport {
             if mode.is_grid() {
@@ -1029,6 +1126,7 @@ impl KvikkApp {
 
     fn goto_page(&mut self, page: usize) {
         let count = self.page_count();
+        self.page_turn_elapsed = 0.0;
         if count == 0 {
             return;
         }
@@ -1055,6 +1153,7 @@ impl KvikkApp {
     }
 
     fn next_page(&mut self, backwards: bool) {
+        self.page_turn_elapsed = 0.0;
         let count = self.page_count();
         if count == 0 {
             return;
@@ -1108,10 +1207,45 @@ impl KvikkApp {
 
     fn speed_slower(&mut self) {
         self.speed_index = self.speed_index.saturating_sub(1);
+        self.page_turn_elapsed = 0.0;
     }
 
     fn speed_faster(&mut self) {
         self.speed_index = (self.speed_index + 1).min(SPEED_LEVELS.len() - 1);
+        self.page_turn_elapsed = 0.0;
+    }
+
+    fn toggle_crop(&mut self, viewport: Option<Rect>) {
+        if self.document.is_none() {
+            return;
+        }
+
+        if let Some(viewport) = viewport {
+            if self.view_mode.is_grid() {
+                self.pending_goto = Some(self.current_page);
+            } else if self.pending_anchor.is_none() {
+                self.pending_anchor = self.capture_anchor(viewport, None);
+            }
+        }
+
+        self.crop_enabled = !self.crop_enabled;
+        self.layout_dirty = true;
+        self.page_turn_elapsed = 0.0;
+        if self.crop_enabled {
+            self.queue_crop(self.current_page, true);
+            let next = self.current_page.saturating_add(1);
+            if next < self.page_count() {
+                self.queue_crop(next, true);
+            }
+        }
+    }
+
+    fn toggle_pacer_mode(&mut self) {
+        self.pacer_mode = match self.pacer_mode {
+            PacerMode::Continuous => PacerMode::PageTurn,
+            PacerMode::PageTurn => PacerMode::Continuous,
+        };
+        self.page_turn_elapsed = 0.0;
     }
 
     fn toggle_invert(&mut self) {
@@ -1215,6 +1349,11 @@ impl KvikkApp {
             return;
         }
 
+        if ctx.input(|i| i.modifiers.command && i.key_pressed(Key::K)) {
+            self.toggle_crop(viewport);
+            return;
+        }
+
         if ctx.input(|i| i.modifiers.command && i.key_pressed(Key::O)) {
             self.open_pdf_dialog();
             return;
@@ -1271,7 +1410,13 @@ impl KvikkApp {
                             }
                             's' => self.show_menu = !self.show_menu,
                             'i' => self.toggle_invert(),
-                            'p' | 'k' => self.is_playing = !self.is_playing,
+                            'p' => self.toggle_pacer_mode(),
+                            'k' => {
+                                self.is_playing = !self.is_playing;
+                                if self.is_playing {
+                                    self.page_turn_elapsed = 0.0;
+                                }
+                            },
                             'j' => self.speed_slower(),
                             'l' => self.speed_faster(),
                             'f' => self.toggle_fullscreen(ctx),
@@ -1376,6 +1521,8 @@ impl KvikkApp {
             let pages = &self.document.as_ref().expect("document checked above").pages;
             self.layout = build_layout(
                 pages,
+                &self.crops,
+                self.crop_enabled,
                 self.view_mode,
                 self.manual_zoom,
                 viewport.width(),
@@ -1503,6 +1650,32 @@ impl KvikkApp {
         }
     }
 
+    fn paint_page_turn_indicator(&self, painter: &egui::Painter, viewport: Rect) {
+        let duration = self.page_turn_seconds().max(0.001);
+        let remaining = (1.0 - self.page_turn_elapsed / duration).clamp(0.0, 1.0);
+        let width = 112.0;
+        let height = 8.0;
+        let margin = 16.0;
+        let min = Pos2::new(viewport.right() - width - margin, viewport.bottom() - 34.0);
+        let bar = Rect::from_min_size(min, Vec2::new(width, height));
+        painter.rect_filled(bar, 4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 42));
+        let fill = Rect::from_min_size(bar.min, Vec2::new(width * remaining, height));
+        painter.rect_filled(fill, 4.0, Color32::from_rgba_unmultiplied(255, 255, 255, 190));
+        let remaining_seconds = (duration - self.page_turn_elapsed).max(0.0);
+        let label = if self.is_playing {
+            format!("{}", pretty_duration(remaining_seconds))
+        } else {
+            format!("paused · {}", pretty_duration(remaining_seconds))
+        };
+        painter.text(
+            Pos2::new(bar.center().x, bar.top() - 4.0),
+            egui::Align2::CENTER_BOTTOM,
+            label,
+            egui::FontId::monospace(12.0),
+            Color32::from_gray(220),
+        );
+    }
+
     fn draw_document(&mut self, ui: &mut egui::Ui) -> Rect {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let viewport = response.rect;
@@ -1530,16 +1703,36 @@ impl KvikkApp {
             if response.hovered() && scroll != Vec2::ZERO {
                 self.scroll_y -= scroll.y;
                 self.scroll_x -= scroll.x;
+                if self.pacer_mode == PacerMode::PageTurn {
+                    self.page_turn_elapsed = 0.0;
+                }
             }
         }
 
         if self.is_playing {
             let dt = ui.ctx().input(|i| i.stable_dt).clamp(0.0, 0.1);
-            self.scroll_y += self.speed() * dt;
+            match self.pacer_mode {
+                PacerMode::Continuous => {
+                    self.scroll_y += self.speed() * dt;
+                }
+                PacerMode::PageTurn => {
+                    let duration = self.page_turn_seconds();
+                    self.page_turn_elapsed += dt;
+                    if self.page_turn_elapsed >= duration {
+                        self.page_turn_elapsed = 0.0;
+                        let before_y = self.scroll_y;
+                        let before_page = self.current_page;
+                        self.next_page(false);
+                        if (self.scroll_y - before_y).abs() < 0.01 && self.current_page == before_page {
+                            self.is_playing = false;
+                        }
+                    }
+                }
+            }
             ui.ctx().request_repaint();
         }
         self.clamp_scroll(viewport.size());
-        if self.is_playing {
+        if self.is_playing && self.pacer_mode == PacerMode::Continuous {
             let max_y = (self.layout.content_height - viewport.height()).max(0.0);
             if self.scroll_y >= max_y - 0.01 {
                 self.is_playing = false;
@@ -1577,10 +1770,18 @@ impl KvikkApp {
             );
             screen_pages.push((placed, screen_rect));
 
+            if self.crop_enabled {
+                let high_priority_crop = !self.dense_grid()
+                    && placed.page == self.current_page
+                    && screen_rect.intersects(viewport.expand(4.0));
+                self.queue_crop(placed.page, high_priority_crop);
+            }
+
             if screen_rect.intersects(viewport.expand(4.0)) {
                 let paper = if self.invert { Color32::BLACK } else { Color32::WHITE };
                 painter.rect_filled(screen_rect, 1.0, paper);
-                let desired = self.desired_render_width(placed.w, pixels_per_point);
+                let source_display_width = placed.w / placed.crop.width();
+                let desired = self.desired_render_width(source_display_width, pixels_per_point);
                 let best = self.best_bitmap_key(placed.page, desired);
                 let has_good_enough = best.is_some_and(|(_, width)| {
                     width as f32 >= desired as f32 * 0.90 && width as f32 <= desired as f32 * 1.55
@@ -1593,7 +1794,10 @@ impl KvikkApp {
                         painter.image(
                             texture.id(),
                             screen_rect,
-                            Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                            Rect::from_min_max(
+                                Pos2::new(placed.crop.left, placed.crop.top),
+                                Pos2::new(placed.crop.right, placed.crop.bottom),
+                            ),
                             Color32::WHITE,
                         );
                     }
@@ -1631,6 +1835,10 @@ impl KvikkApp {
         self.handle_selection_input(ui, &response, viewport, &screen_pages);
         self.handle_link_click(ui, &response, &screen_pages);
         self.prune_bitmap_cache(&visible_pages);
+
+        if self.pacer_mode == PacerMode::PageTurn {
+            self.paint_page_turn_indicator(&painter, viewport);
+        }
 
         if self.goto_active {
             painter.text(
@@ -1700,8 +1908,7 @@ impl KvikkApp {
         };
 
         let metric = document.pages[placed.page];
-        let x_pt = ((pos.x - rect.left()) / rect.width()) * metric.width_pt;
-        let y_pt = metric.height_pt - ((pos.y - rect.top()) / rect.height()) * metric.height_pt;
+        let (x_pt, y_pt) = screen_point_to_pdf(pos, *rect, metric.width_pt, metric.height_pt, placed.crop);
         // Quantizing to roughly one PDF point prevents a flood of worker messages while
         // still making link hover feel immediate at normal reading scales.
         let signature = (placed.page, x_pt.round() as i32, y_pt.round() as i32);
@@ -1742,8 +1949,7 @@ impl KvikkApp {
         let Some(document) = self.document.as_ref() else { return };
         let Some((placed, rect)) = screen_pages.iter().find(|(_, rect)| rect.contains(pos)) else { return };
         let metric = document.pages[placed.page];
-        let x_pt = ((pos.x - rect.left()) / rect.width()) * metric.width_pt;
-        let y_pt = metric.height_pt - ((pos.y - rect.top()) / rect.height()) * metric.height_pt;
+        let (x_pt, y_pt) = screen_point_to_pdf(pos, *rect, metric.width_pt, metric.height_pt, placed.crop);
         let signature = (placed.page, x_pt.round() as i32, y_pt.round() as i32);
 
         if self.link_probe_signature == Some(signature) {
@@ -1772,8 +1978,7 @@ impl KvikkApp {
             return None;
         }
         let metric = document.pages[placed.page];
-        let x_pt = ((pos.x - screen_rect.left()) / screen_rect.width()) * metric.width_pt;
-        let y_pt = metric.height_pt - ((pos.y - screen_rect.top()) / screen_rect.height()) * metric.height_pt;
+        let (x_pt, y_pt) = screen_point_to_pdf(pos, *screen_rect, metric.width_pt, metric.height_pt, placed.crop);
 
         let mut best: Option<(usize, f32)> = None;
         for (index, glyph) in data.glyphs.iter().enumerate() {
@@ -1826,8 +2031,15 @@ impl KvikkApp {
         let metric = document.pages[placed.page];
         for glyph in &data.glyphs[from..=to] {
             let Some(bounds) = glyph.bounds else { continue };
-            let rect = pdf_bounds_to_screen(bounds, metric.width_pt, metric.height_pt, screen_rect);
-            painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(60, 120, 255, 78));
+            if let Some(rect) = pdf_bounds_to_screen(
+                bounds,
+                metric.width_pt,
+                metric.height_pt,
+                placed.crop,
+                screen_rect,
+            ) {
+                painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(60, 120, 255, 78));
+            }
         }
     }
 
@@ -1899,13 +2111,30 @@ impl KvikkApp {
                         self.open_pdf_dialog();
                     }
                     ui.separator();
-                    if ui.button(if self.is_playing { "Pause" } else { "Play" }).clicked() {
+                    if ui.button(if self.is_playing { "K Pause" } else { "K Play" }).clicked() {
                         self.is_playing = !self.is_playing;
+                        if self.is_playing {
+                            self.page_turn_elapsed = 0.0;
+                        }
+                    }
+                    let pacer_label = match self.pacer_mode {
+                        PacerMode::Continuous => "P Scroll",
+                        PacerMode::PageTurn => "P Pages",
+                    };
+                    if ui.selectable_label(self.pacer_mode == PacerMode::PageTurn, pacer_label).clicked() {
+                        self.toggle_pacer_mode();
                     }
                     if ui.small_button("J slower").clicked() {
                         self.speed_slower();
                     }
-                    ui.monospace(format!("{} px/s", pretty_speed(self.speed())));
+                    match self.pacer_mode {
+                        PacerMode::Continuous => {
+                            ui.monospace(format!("{} px/s", pretty_speed(self.speed())));
+                        }
+                        PacerMode::PageTurn => {
+                            ui.monospace(format!("{} / page", pretty_duration(self.page_turn_seconds())));
+                        }
+                    }
                     if ui.small_button("L faster").clicked() {
                         self.speed_faster();
                     }
@@ -1954,6 +2183,9 @@ impl KvikkApp {
                     ui.separator();
                     if ui.selectable_label(self.invert, "I Invert").clicked() {
                         self.toggle_invert();
+                    }
+                    if ui.selectable_label(self.crop_enabled, "⌘K Crop").clicked() {
+                        self.toggle_crop(viewport_hint);
                     }
                     if ui.button("Search").clicked() {
                         self.open_search();
@@ -2154,12 +2386,49 @@ fn ordered_selection(a: SelectionPoint, b: SelectionPoint) -> (SelectionPoint, S
     if (a.page, a.glyph) <= (b.page, b.glyph) { (a, b) } else { (b, a) }
 }
 
-fn pdf_bounds_to_screen(bounds: PdfBounds, page_w: f32, page_h: f32, screen: Rect) -> Rect {
-    let left = screen.left() + (bounds.left / page_w) * screen.width();
-    let right = screen.left() + (bounds.right / page_w) * screen.width();
-    let top = screen.top() + ((page_h - bounds.top) / page_h) * screen.height();
-    let bottom = screen.top() + ((page_h - bounds.bottom) / page_h) * screen.height();
-    Rect::from_min_max(Pos2::new(left, top), Pos2::new(right, bottom))
+fn screen_point_to_pdf(
+    pos: Pos2,
+    screen: Rect,
+    page_w: f32,
+    page_h: f32,
+    crop: PageCrop,
+) -> (f32, f32) {
+    let local_x = ((pos.x - screen.left()) / screen.width().max(0.001)).clamp(0.0, 1.0);
+    let local_y = ((pos.y - screen.top()) / screen.height().max(0.001)).clamp(0.0, 1.0);
+    let source_x = crop.left + local_x * crop.width();
+    let source_y_from_top = crop.top + local_y * crop.height();
+    (source_x * page_w, page_h - source_y_from_top * page_h)
+}
+
+fn pdf_bounds_to_screen(
+    bounds: PdfBounds,
+    page_w: f32,
+    page_h: f32,
+    crop: PageCrop,
+    screen: Rect,
+) -> Option<Rect> {
+    let left_norm = bounds.left / page_w.max(0.001);
+    let right_norm = bounds.right / page_w.max(0.001);
+    let top_norm = (page_h - bounds.top) / page_h.max(0.001);
+    let bottom_norm = (page_h - bounds.bottom) / page_h.max(0.001);
+
+    let left = screen.left() + ((left_norm - crop.left) / crop.width()) * screen.width();
+    let right = screen.left() + ((right_norm - crop.left) / crop.width()) * screen.width();
+    let top = screen.top() + ((top_norm - crop.top) / crop.height()) * screen.height();
+    let bottom = screen.top() + ((bottom_norm - crop.top) / crop.height()) * screen.height();
+
+    let clipped_left = left.max(screen.left());
+    let clipped_right = right.min(screen.right());
+    let clipped_top = top.max(screen.top());
+    let clipped_bottom = bottom.min(screen.bottom());
+    if clipped_left >= clipped_right || clipped_top >= clipped_bottom {
+        None
+    } else {
+        Some(Rect::from_min_max(
+            Pos2::new(clipped_left, clipped_top),
+            Pos2::new(clipped_right, clipped_bottom),
+        ))
+    }
 }
 
 fn make_snippet(text: &str, lower: &str, byte_start: usize, needle_bytes: usize) -> String {
@@ -2183,6 +2452,19 @@ fn make_snippet(text: &str, lower: &str, byte_start: usize, needle_bytes: usize)
 
 fn pretty_speed(speed: f32) -> String {
     if speed.fract() == 0.0 { format!("{speed:.0}") } else { format!("{speed:.1}") }
+}
+
+fn pretty_duration(seconds: f32) -> String {
+    if seconds >= 60.0 {
+        let total = seconds.round().max(0.0) as u32;
+        let minutes = total / 60;
+        let rest = total % 60;
+        format!("{minutes}:{rest:02}")
+    } else if seconds >= 10.0 {
+        format!("{seconds:.0}s")
+    } else {
+        format!("{seconds:.1}s")
+    }
 }
 
 fn is_pdf(path: &Path) -> bool {

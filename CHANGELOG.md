@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.3
+
+- Added `⌘K` visual page-margin cropping. Kvikk analyzes page content bounds lazily with PDFium, caches the crop per page, and uses the cropped geometry for layout, rendering, text selection, and PDF-link hit-testing without modifying the PDF.
+- Changed `P` from play/pause to a pacer-mode toggle: continuous scrolling remains the default, while page-turn mode advances one page or page group after a timed interval.
+- Kept `K` as the dedicated play/pause key in both pacer modes.
+- Reused `J`/`L` for slower/faster page-turn timing; the existing speed ladder maps inversely to seconds per page, with the default 15-level corresponding to about 60 seconds per page.
+- Added an on-page countdown bar in page-turn mode showing time remaining before the next turn.
+
 ## 0.6.2
 
 - Changed view modes `4`–`8` to fixed-row layouts with window-adaptive column counts: 2, 3, 4, 5, and 7 rows respectively. Mode `9` remains the dynamic whole-document overview.

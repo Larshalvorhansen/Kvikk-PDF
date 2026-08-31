@@ -5,6 +5,9 @@ pub const SPEED_LEVELS: &[f32] = &[
 ];
 
 pub const DEFAULT_SPEED: f32 = 15.0;
+pub const PAGE_TURN_REFERENCE_DISTANCE: f32 = 900.0;
+pub const PAGE_TURN_MIN_SECONDS: f32 = 0.5;
+pub const PAGE_TURN_MAX_SECONDS: f32 = 1800.0;
 pub const MIN_NATIVE_TEXT_CHARS: usize = 48;
 pub const BASE_PX_PER_POINT: f32 = 96.0 / 72.0;
 pub const PAGE_GAP: f32 = 4.0;
@@ -55,6 +58,36 @@ impl ViewMode {
                 | Self::Rows7
                 | Self::Overview
         )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PageCrop {
+    /// Normalized left edge in rendered-page coordinates (0..1).
+    pub left: f32,
+    /// Normalized top edge in rendered-page coordinates (0..1).
+    pub top: f32,
+    /// Normalized right edge in rendered-page coordinates (0..1).
+    pub right: f32,
+    /// Normalized bottom edge in rendered-page coordinates (0..1).
+    pub bottom: f32,
+}
+
+impl Default for PageCrop {
+    fn default() -> Self {
+        Self::FULL
+    }
+}
+
+impl PageCrop {
+    pub const FULL: Self = Self { left: 0.0, top: 0.0, right: 1.0, bottom: 1.0 };
+
+    pub fn width(self) -> f32 {
+        (self.right - self.left).clamp(0.01, 1.0)
+    }
+
+    pub fn height(self) -> f32 {
+        (self.bottom - self.top).clamp(0.01, 1.0)
     }
 }
 
@@ -112,6 +145,7 @@ pub struct DocumentInfo {
 #[derive(Clone, Copy, Debug)]
 pub struct PlacedPage {
     pub page: usize,
+    pub crop: PageCrop,
     pub x: f32,
     pub y: f32,
     pub w: f32,
