@@ -1,0 +1,7 @@
+/Users/lhh/Documents/Kvikk-PDF/target/debug/build/objc-sys-446039a265af498c/build_script_build-446039a265af498c.d: /Users/lhh/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc-sys-0.3.5/build.rs
+
+/Users/lhh/Documents/Kvikk-PDF/target/debug/build/objc-sys-446039a265af498c/build_script_build-446039a265af498c: /Users/lhh/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc-sys-0.3.5/build.rs
+
+/Users/lhh/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc-sys-0.3.5/build.rs:
+
+# env-dep:CARGO_MANIFEST_DIR=/Users/lhh/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc-sys-0.3.5
