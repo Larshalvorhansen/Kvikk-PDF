@@ -31,42 +31,46 @@ Licensed under the MIT License.
 - Multiple PDF tabs with preserved reading position, keyboard switching, new-tab, and close-tab shortcuts.
 - PDFs stay local on your machine.
 
+## Demo usage
+
+![](https://github.com/Larshalvorhansen/Kvikk-PDF/kvikk_Demo.gif)
+
 ## Keyboard shortcuts
 
 <<<<<<< HEAD
-| Key                     | Action                                                                                     |
+| Key | Action |
 | ----------------------- | ------------------------------------------------------------------------------------------ |
-| `Ctrl/⌘ F` or `/`       | Search inside the PDF                                                                      |
-| `Enter` / `Shift+Enter` | Next / previous search result                                                              |
-| `g45`                   | Go to page 45                                                                              |
-| Hold `?`                | Show keyboard commands                                                                     |
-| `S`                     | Show / hide toolbar                                                                        |
-| `I`                     | Invert PDF                                                                                 |
-| `P` or `K`              | Play / pause pacer                                                                         |
-| `J`                     | Slower pacer                                                                               |
-| `L`                     | Faster pacer                                                                               |
-| `Space`                 | Next page / page group                                                                     |
-| `Shift+Space`           | Snap to the top of the current page/group; if already there, go to the previous page/group |
-| `+` / `-`               | Zoom in / out                                                                              |
-| `O` or `⌘O`             | Open a PDF                                                                                 |
-| `⌘T`                    | New empty tab                                                                              |
-| `⌘W`                    | Close current tab                                                                          |
-| `⌘⇧Tab` or `⌘⇧T`        | Reopen the previously closed tab                                                           |
-| `0`                     | Reset zoom to 100%                                                                         |
-| Pinch / Ctrl-scroll     | Zoom around pointer                                                                        |
-| `1`                     | Fit width                                                                                  |
-| `2`                     | Fit height                                                                                 |
-| `3`                     | 2 pages, 2×1                                                                               |
-| `4`                     | 2 rows of pages; columns adapt to the window                                               |
-| `5`                     | 3 rows of pages; columns adapt to the window                                               |
-| `6`                     | 4 rows of pages; columns adapt to the window                                               |
-| `7`                     | 5 rows of pages; columns adapt to the window                                               |
-| `8`                     | 7 rows of pages; columns adapt to the window                                               |
-| `9`                     | Dynamic overview: fit all or nearly all pages on screen                                    |
-| `⌘1`–`⌘8`               | Switch to tabs 1–8                                                                         |
-| `⌘9`                    | Switch to the last tab                                                                     |
-| `F`                     | Toggle fullscreen                                                                          |
-| `Ctrl/⌘ C`              | Copy selected text                                                                         |
+| `Ctrl/⌘ F` or `/` | Search inside the PDF |
+| `Enter` / `Shift+Enter` | Next / previous search result |
+| `g45` | Go to page 45 |
+| Hold `?` | Show keyboard commands |
+| `S` | Show / hide toolbar |
+| `I` | Invert PDF |
+| `P` or `K` | Play / pause pacer |
+| `J` | Slower pacer |
+| `L` | Faster pacer |
+| `Space` | Next page / page group |
+| `Shift+Space` | Snap to the top of the current page/group; if already there, go to the previous page/group |
+| `+` / `-` | Zoom in / out |
+| `O` or `⌘O` | Open a PDF |
+| `⌘T` | New empty tab |
+| `⌘W` | Close current tab |
+| `⌘⇧Tab` or `⌘⇧T` | Reopen the previously closed tab |
+| `0` | Reset zoom to 100% |
+| Pinch / Ctrl-scroll | Zoom around pointer |
+| `1` | Fit width |
+| `2` | Fit height |
+| `3` | 2 pages, 2×1 |
+| `4` | 2 rows of pages; columns adapt to the window |
+| `5` | 3 rows of pages; columns adapt to the window |
+| `6` | 4 rows of pages; columns adapt to the window |
+| `7` | 5 rows of pages; columns adapt to the window |
+| `8` | 7 rows of pages; columns adapt to the window |
+| `9` | Dynamic overview: fit all or nearly all pages on screen |
+| `⌘1`–`⌘8` | Switch to tabs 1–8 |
+| `⌘9` | Switch to the last tab |
+| `F` | Toggle fullscreen |
+| `Ctrl/⌘ C` | Copy selected text |
 =======
 | Key | Action |
 | --- | --- |
@@ -101,14 +105,16 @@ Licensed under the MIT License.
 | `Ctrl/⌘ 9` | Switch to the last tab |
 | `F` | Toggle fullscreen |
 | `Ctrl/⌘ C` | Copy selected text |
->>>>>>> refs/remotes/origin/main
+
+> > > > > > > refs/remotes/origin/main
 
 Modes `4`–`8` keep a fixed row count but calculate their column count from the current window shape and the PDF’s average page aspect ratio. Resizing the window therefore changes how many pages fit in each navigation group without changing the requested number of rows. Mode `9` remains a fully dynamic whole-document overview. For example, a ten-page portrait PDF will typically use a compact layout such as 5×2, while a roughly 300-page PDF may use around 24–26 columns depending on the window aspect ratio.
 
 On macOS, `⌘Tab`/`⌘⇧Tab` are normally reserved by the operating system for application switching, so Kvikk supports the conventional `Ctrl/⌘ + Shift + T` shortcut for reopening the most recently closed tab instead.
 
 ## About
-This software was initially built as a tool for personal use. But why not share it with others? 
+
+This software was initially built as a tool for personal use. But why not share it with others?
 It is built around PDFium, egui/eframe, wgpu, and Tesseract OCR. The reader keeps the interface deliberately small while providing unusually fast keyboard navigation, pacing, flexible page layouts, search, selectable text, OCR fallback, inversion, and high-resolution rendering.
 
 ## Install kvikk pdf (no Nix required)
