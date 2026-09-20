@@ -37,40 +37,40 @@ Licensed under the MIT License.
 
 ## Keyboard shortcuts
 
-<<<<<<< HEAD
-| Key | Action |
+| Key                     | Action                                                                                     |
 | ----------------------- | ------------------------------------------------------------------------------------------ |
-| `Ctrl/⌘ F` or `/` | Search inside the PDF |
-| `Enter` / `Shift+Enter` | Next / previous search result |
-| `g45` | Go to page 45 |
-| Hold `?` | Show keyboard commands |
-| `S` | Show / hide toolbar |
-| `I` | Invert PDF |
-| `P` or `K` | Play / pause pacer |
-| `J` | Slower pacer |
-| `L` | Faster pacer |
-| `Space` | Next page / page group |
-| `Shift+Space` | Snap to the top of the current page/group; if already there, go to the previous page/group |
-| `+` / `-` | Zoom in / out |
-| `O` or `⌘O` | Open a PDF |
-| `⌘T` | New empty tab |
-| `⌘W` | Close current tab |
-| `⌘⇧Tab` or `⌘⇧T` | Reopen the previously closed tab |
-| `0` | Reset zoom to 100% |
-| Pinch / Ctrl-scroll | Zoom around pointer |
-| `1` | Fit width |
-| `2` | Fit height |
-| `3` | 2 pages, 2×1 |
-| `4` | 2 rows of pages; columns adapt to the window |
-| `5` | 3 rows of pages; columns adapt to the window |
-| `6` | 4 rows of pages; columns adapt to the window |
-| `7` | 5 rows of pages; columns adapt to the window |
-| `8` | 7 rows of pages; columns adapt to the window |
-| `9` | Dynamic overview: fit all or nearly all pages on screen |
-| `⌘1`–`⌘8` | Switch to tabs 1–8 |
-| `⌘9` | Switch to the last tab |
-| `F` | Toggle fullscreen |
-| `Ctrl/⌘ C` | Copy selected text |
+| `Ctrl/⌘ F` or `/`       | Search inside the PDF                                                                      |
+| `Enter` / `Shift+Enter` | Next / previous search result                                                              |
+| `g45`                   | Go to page 45                                                                              |
+| Hold `?`                | Show keyboard commands                                                                     |
+| `S`                     | Show / hide toolbar                                                                        |
+| `I`                     | Invert PDF                                                                                 |
+| `P` or `K`              | Play / pause pacer                                                                         |
+| `J`                     | Slower pacer                                                                               |
+| `L`                     | Faster pacer                                                                               |
+| `Space`                 | Next page / page group                                                                     |
+| `Shift+Space`           | Snap to the top of the current page/group; if already there, go to the previous page/group |
+| `+` / `-`               | Zoom in / out                                                                              |
+| `O` or `⌘O`             | Open a PDF                                                                                 |
+| `⌘T`                    | New empty tab                                                                              |
+| `⌘W`                    | Close current tab                                                                          |
+| `⌘⇧Tab` or `⌘⇧T`        | Reopen the previously closed tab                                                           |
+| `0`                     | Reset zoom to 100%                                                                         |
+| Pinch / Ctrl-scroll     | Zoom around pointer                                                                        |
+| `1`                     | Fit width                                                                                  |
+| `2`                     | Fit height                                                                                 |
+| `3`                     | 2 pages, 2×1                                                                               |
+| `4`                     | 2 rows of pages; columns adapt to the window                                               |
+| `5`                     | 3 rows of pages; columns adapt to the window                                               |
+| `6`                     | 4 rows of pages; columns adapt to the window                                               |
+| `7`                     | 5 rows of pages; columns adapt to the window                                               |
+| `8`                     | 7 rows of pages; columns adapt to the window                                               |
+| `9`                     | Dynamic overview: fit all or nearly all pages on screen                                    |
+| `⌘1`–`⌘8`               | Switch to tabs 1–8                                                                         |
+| `⌘9`                    | Switch to the last tab                                                                     |
+| `F`                     | Toggle fullscreen                                                                          |
+| `Ctrl/⌘ C`              | Copy selected text                                                                         |
+
 =======
 | Key | Action |
 | --- | --- |
