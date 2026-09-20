@@ -33,7 +33,7 @@ Licensed under the MIT License.
 
 ## Demo usage
 
-![Demo](https://github.com/Larshalvorhansen/Kvikk-PDF/kvikk_Demo.gif)
+![App Demo](kvikk_Demo.gif)
 
 ## Keyboard shortcuts
 
