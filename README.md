@@ -33,7 +33,7 @@ Licensed under the MIT License.
 
 ## Demo usage
 
-![App Demo](kvikk_Demo.gif)
+![App Demo](./kvikk_Demo.gif)
 
 ## Keyboard shortcuts
 
